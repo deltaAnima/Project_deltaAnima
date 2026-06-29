@@ -1,0 +1,51 @@
+# GitLab CI for delta-edge (Rust 2024 edition)
+
+default:
+  image: rust:latest
+  # Cache the cargo registry and build artifacts between jobs/pipelines.
+  cache:
+    key:
+      files:
+        - Cargo.toml
+    paths:
+      - .cargo/
+      - target/
+
+variables:
+  # Keep cargo's registry/cache inside the project so GitLab can cache it.
+  CARGO_HOME: "$CI_PROJECT_DIR/.cargo"
+  # Fail fast and keep logs readable.
+  CARGO_TERM_COLOR: "always"
+
+stages:
+  - check
+  - build
+  - test
+
+fmt:
+  stage: check
+  before_script:
+    - rustup component add rustfmt
+  script:
+    - cargo fmt --all -- --check
+
+clippy:
+  stage: check
+  before_script:
+    - rustup component add clippy
+  script:
+    - cargo clippy --all-targets --all-features -- -D warnings
+
+build:
+  stage: build
+  script:
+    - cargo build --verbose
+  artifacts:
+    paths:
+      - target/debug/delta-edge
+    expire_in: 1 week
+
+test:
+  stage: test
+  script:
+    - cargo test --verbose
