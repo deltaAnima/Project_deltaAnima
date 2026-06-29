@@ -10,7 +10,6 @@ use crate::hub::Role;
 ///  Orchestrator ──tts_request──→  Tts
 ///  Tts  ──tts_start/tts_done──→  Client
 ///  Tts  ──binary(audio)──→  Client
-
 pub struct Route;
 
 impl Route {

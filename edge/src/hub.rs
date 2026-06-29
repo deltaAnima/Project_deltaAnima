@@ -6,7 +6,7 @@ use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::Message;
-use tracing::{error, info, warn};
+use tracing::{info, warn};
 
 use crate::routing::Route;
 
@@ -39,6 +39,7 @@ pub struct Envelope {
 }
 
 #[derive(Debug, Serialize)]
+#[allow(dead_code)] // protocol type; messages are currently built inline via serde_json::json!
 pub struct OutEnvelope {
     #[serde(rename = "type")]
     pub msg_type: String,
@@ -53,6 +54,7 @@ pub struct OutEnvelope {
 #[derive(Clone)]
 pub struct PeerHandle {
     pub id: uuid::Uuid,
+    #[allow(dead_code)] // retained as peer metadata; not read yet
     pub role: Role,
     pub tx: mpsc::UnboundedSender<Message>,
 }

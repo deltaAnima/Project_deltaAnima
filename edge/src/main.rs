@@ -1,7 +1,6 @@
 mod hub;
 mod routing;
 
-use std::net::SocketAddr;
 use tokio::net::TcpListener;
 use tokio_tungstenite::accept_async;
 use tracing::{error, info};
