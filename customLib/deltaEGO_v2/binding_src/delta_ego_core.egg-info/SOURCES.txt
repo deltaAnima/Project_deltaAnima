@@ -1,0 +1,7 @@
+deltaEGO.cpp
+pyproject.toml
+setup.py
+delta_ego_core.egg-info/PKG-INFO
+delta_ego_core.egg-info/SOURCES.txt
+delta_ego_core.egg-info/dependency_links.txt
+delta_ego_core.egg-info/top_level.txt

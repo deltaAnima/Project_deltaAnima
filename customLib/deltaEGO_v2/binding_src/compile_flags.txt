@@ -1,0 +1,5 @@
+-xc++
+-std=c++17
+-I/usr/include/python3.13
+-I/usr/local/include/python3.13 
+-I/home/Reminh/.local/lib/python3.13/site-packages/pybind11/include

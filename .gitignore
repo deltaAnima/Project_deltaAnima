@@ -1,0 +1,12 @@
+.env
+secrets/
+*.so
+build/
+__pycache__/
+*.pyc
+*.gguf
+*.safetensors
+*.pt
+*.json
+*.index
+*.yaml
