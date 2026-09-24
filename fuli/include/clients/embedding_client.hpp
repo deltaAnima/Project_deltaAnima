@@ -4,6 +4,7 @@
 #include <boost/asio/io_context.hpp>
 #include <string>
 #include <vector>
+#include "Third_Party/json.hpp"
 
 namespace clients {
 
@@ -32,6 +33,9 @@ public:
   // connection pool is a reasonable next optimization once this is a
   // bottleneck, not before.
   boost::asio::awaitable<std::vector<float>> Embed(std::string text) const;
+  
+
+  nlohmann::json HealthCheck() const;
 
 private:
   boost::asio::io_context &ioc_; // currently unused directly (the executor

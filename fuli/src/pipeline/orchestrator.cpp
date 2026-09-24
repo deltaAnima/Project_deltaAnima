@@ -1,53 +1,20 @@
 #include "pipeline/orchestrator.hpp"
 
-#include <boost/asio/steady_timer.hpp>
-#include <boost/asio/this_coro.hpp>
-#include <boost/asio/use_awaitable.hpp>
-#include <chrono>
+#include "util/future_bridge.hpp"
 
 namespace pipeline {
 
 namespace net = boost::asio;
 
-namespace {
-
-// --- Why this function exists ---------------------------------------------
 // IVectorSearchEngine::AsyncSearch() (see engine/vector_search_engine.hpp)
-// returns a std::future<SearchResult>, NOT a boost::asio::awaitable. That
-// interface predates the HTTP/coroutine layer of this server, and
-// std::future has no built-in way to "wake up" an asio coroutine when it
-// becomes ready — futures and asio's executor model are two unrelated
-// concurrency systems that don't talk to each other automatically.
-//
-// The correct long-term fix is to change the engine's API to complete via
-// an asio completion token (so the GPU worker thread posts its result
-// directly onto the caller's executor) instead of a bare std::future.
-// That's a real refactor across gpu_faiss_engine.hpp/.cpp and the
-// IVectorSearchEngine interface, deliberately not done yet.
-//
-// For now, this is a pragmatic bridge: poll the future every 2ms, but do
-// the "waiting" with an asio steady_timer + co_await instead of
-// fut.wait()/fut.get() directly. That matters a lot: calling fut.get()
-// (or fut.wait()) here would BLOCK the io_context thread solid until the
-// GPU search finishes, which would freeze every other in-flight request
-// this server is handling (remember: this server may run on as few as
-// one io_context thread — see main.cpp's `net::io_context ioc{1}`).
-// Looping on a short async timer instead means this coroutine repeatedly
-// gives control back to the io_context between checks, so other requests
-// keep making progress while this one waits.
-net::awaitable<SearchResult> AwaitSearch(std::future<SearchResult> fut) {
-  auto executor = co_await net::this_coro::executor;
-  net::steady_timer timer(executor);
-  while (fut.wait_for(std::chrono::milliseconds(0)) !=
-         std::future_status::ready) {
-    timer.expires_after(std::chrono::milliseconds(2));
-    co_await timer.async_wait(net::use_awaitable);
-  }
-  co_return fut.get(); // re-throws here if the worker thread set an
-                        // exception (see GpuFaissEngine::Impl::AsyncSearch)
-}
-
-} // namespace
+// returns a std::future<SearchResult>, not a boost::asio::awaitable —
+// util::AwaitFuture (include/util/future_bridge.hpp) is what turns that
+// into something we can co_await without blocking the io_context thread.
+// See that header for the full rationale; this used to be a private
+// helper duplicated here until HealthChecker needed the exact same
+// bridge for a different std::future<T>, at which point it made sense to
+// share one implementation instead of copy-pasting the polling loop
+// again.
 
 Orchestrator::Orchestrator(clients::EmbeddingClient &embedder,
                             IVectorSearchEngine &search_engine,
@@ -78,7 +45,7 @@ Orchestrator::HandleContextRequest(schemas::FuliContextRequest req) {
   // metadata join (session/user scoping, importance/time-decay filtering)
   // yet — see schemas/rag_schemas.hpp for exactly which RAGQueryOrder
   // fields are parsed-but-currently-ignored.
-  SearchResult raw = co_await AwaitSearch(
+  SearchResult raw = co_await util::AwaitFuture(
       search_engine_.AsyncSearch(query_vector, req.rag_policy.top_k));
 
   // --- [4-A] Emotion branch -----------------------------------------------

@@ -93,6 +93,7 @@ set(COMMON_SOURCES
     src/clients/embedding_client.cpp
     src/http/http_server.cpp
     src/deltaEGO/deltaEGO.cpp
+    src/health/health_checker.cpp
     ${PROTO_SRCS}
     ${GRPC_SRCS}
 )

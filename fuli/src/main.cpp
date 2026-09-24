@@ -20,9 +20,11 @@
 #include "config/constants.hpp"
 #include "deltaEGO/deltaEGO.hpp"
 #include "engine/gpu_faiss_engine.hpp"
+#include "health/health_checker.hpp"
 #include "http/http_server.hpp"
 #include "pipeline/orchestrator.hpp"
 #include "schemas/fuli_schemas.hpp"
+#include "util/future_bridge.hpp"
 
 namespace {
 
@@ -95,7 +97,8 @@ int main()
             << std::endl;
   deltaEGO::deltaEGO emotion_engine(config::kDeltaEgoConfigPath, 0.0f, 0.0f,
                                      0.0f, 1.0f);
-  if (!emotion_engine.load_vad_db(config::kVadDbPath)) {
+  if (!emotion_engine.load_vad_db(config::kVadDbPath)) 
+  {
     std::cerr << "[Init] warning: failed to load VAD DB from "
               << config::kVadDbPath << std::endl;
   }
@@ -119,6 +122,10 @@ int main()
   // invariant holds automatically here.
   pipeline::Orchestrator orchestrator(embedder, search_engine, emotion_engine);
 
+  // Same reference-holding, same lifetime rule as Orchestrator above:
+  // health_checker just borrows embedder, doesn't own it.
+  health::HealthChecker health_checker(embedder);
+
   httpsrv::HttpServer server(ioc, config::kListenPort);
   server.RegisterRoute(
       "POST /character/context",
@@ -139,6 +146,40 @@ int main()
         // json(resp) triggers schemas::to_json(...) the same way.
         co_return json(resp).dump();
       });
+
+  server.RegisterRoute(
+      "GET /health",
+      // health_checker.CheckAll() returns a std::future<json> immediately
+      // (it does NOT block here) — util::AwaitFuture is what actually
+      // waits for it, the same non-blocking-to-the-io_context way
+      // Orchestrator waits on GpuFaissEngine::AsyncSearch. Without that
+      // bridge, calling .get() on the future directly in this coroutine
+      // would stall the whole server for as long as the slowest
+      // dependency's health check takes (up to its timeout) — every
+      // other in-flight request would freeze too.
+      [&health_checker](std::string) -> net::awaitable<std::string> {
+        nlohmann::json services =
+            co_await util::AwaitFuture(health_checker.CheckAll());
+
+        // Overall status is "ok" only if every reported service is
+        // healthy. Iterating services.items() (instead of hardcoding
+        // "embedding") means this keeps working unchanged as more
+        // clients get added to HealthChecker later.
+        bool all_healthy = true;
+        for (const auto &[name, status] : services.items()) {
+          if (status.value("status", "unknown") != "healthy") {
+            all_healthy = false;
+            break;
+          }
+        }
+
+        nlohmann::json resp = {
+            {"status", all_healthy ? "ok" : "degraded"},
+            {"services", services},
+        };
+        co_return resp.dump();
+      });
+
 
   // Run() only SCHEDULES the accept loop (via co_spawn) — it does not
   // block. The actual accepting/serving only happens once we call

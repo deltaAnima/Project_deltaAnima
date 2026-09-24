@@ -88,4 +88,75 @@ net::awaitable<std::vector<float>> EmbeddingClient::Embed(
   co_return parsed.at(0).get<std::vector<float>>();
 }
 
+nlohmann::json EmbeddingClient::HealthCheck() const 
+{
+  if(this->port_.empty() || this->host_.empty())
+  {
+    return nlohmann::json{
+      {"status", "error"},
+      {"message", "Class EmbeddingClient -> host or port is empty"}
+    };
+  }
+
+  namespace net = boost::asio;
+  using tcp = net::ip::tcp;
+
+  try
+  {
+    net::io_context io_context;
+    tcp::resolver resolver(io_context);
+    tcp::socket socket(io_context);
+
+    auto endpoints = resolver.resolve(this->host_, this->port_);
+
+    net::steady_timer timer(io_context);
+    timer.expires_after(std::chrono::seconds(5)); // Set a timeout of 5 seconds
+
+    boost::system::error_code connect_ec = net::error::would_block;
+
+    //async connect try
+    net::async_connect(socket, endpoints,
+        [&connect_ec](const boost::system::error_code& ec, const tcp::endpoint&) {
+        connect_ec = ec;
+      });
+
+    // close the socket if the timer expires
+    timer.async_wait([&socket](const boost::system::error_code& ec) {
+      if (!ec) {
+        boost::system::error_code ignored_ec;
+        socket.close(ignored_ec);
+      }
+    });
+
+    // execute the event loop until the connect operation completes or the timer expires
+    io_context.run();
+
+    // check if the connection was successful
+    if (connect_ec) 
+    {
+      return nlohmann::json{
+        {"status", "unhealthy"},
+        {"message", "Class EmbeddingClient -> Failed to connect: " + connect_ec.message()}
+      };
+    }
+
+    // If we reach here, the connection was successful
+    boost::system::error_code ignored_ec;
+    socket.shutdown(tcp::socket::shutdown_both, ignored_ec);
+    socket.close(ignored_ec);
+
+    return nlohmann::json{
+      {"status", "healthy"},
+      {"message", "Class EmbeddingClient -> Can connect to host and port.\n"}
+    };
+  }
+  catch (const std::exception& e)
+  {
+    return nlohmann::json{
+      {"status", "error"},
+      {"message", "Class EmbeddingClient -> Exception during health check: " + std::string(e.what())}
+    };
+  }
+}
+
 } // namespace clients
