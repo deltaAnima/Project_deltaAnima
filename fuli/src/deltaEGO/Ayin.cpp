@@ -128,44 +128,57 @@ inline void score_blocks_avx512(const short *data, size_t n_blocks,
                                 const int query32[4], std::pair<int, int> *out,
                                 size_t first_index)
 {
+  // load 128 bitss(4 ints) and copy and paste to 512 bit regis 4 times(Broadcast)
   __m128i q_128 = _mm_loadu_si128((const __m128i *)query32);
   __m512i v_q32 = _mm512_broadcast_i32x4(q_128);
 
+  // aligned array to extract results
   alignas(64) int out_lo[16];
   alignas(64) int out_hi[16];
 
+  // handle 8 vectors(32 short = 64 bytes) per loop
   size_t i = first_index;
   for (size_t block = 0; block < n_blocks; ++block, i += 8)
   {
-    __m512i vec_target = _mm512_load_si512((const void *)&data[i * 4]);
+    // laod aligned 64 byte data with _mm512_load_si512
+    __m512i vec_target = _mm512_load_si512((__m512i *)&data[i * 4]);
 
+    // to convert 16 bit -> 32 bit, devide data as upper/lower 256 bits
     __m256i target_lo = _mm512_castsi512_si256(vec_target);
     __m256i target_hi = _mm512_extracti64x4_epi64(vec_target, 1);
 
+    //16 bit -> 32 bit  up casting
     __m512i vec_t32_lo = _mm512_cvtepi16_epi32(target_lo);
     __m512i vec_t32_hi = _mm512_cvtepi16_epi32(target_hi);
 
+    // calculate difference (Target - Query)
     __m512i diff_lo = _mm512_sub_epi32(vec_t32_lo, v_q32);
     __m512i diff_hi = _mm512_sub_epi32(vec_t32_hi, v_q32);
 
+    // power (Diff * Diff)
     __m512i square_lo = _mm512_mullo_epi32(diff_lo, diff_lo);
     __m512i square_hi = _mm512_mullo_epi32(diff_hi, diff_hi);
 
-    // per 128-bit lane: [x, y, z, pad] -> every element = x+y+z+pad
+    // 1st : addition with Suffle and Adds
+    // in 128 bit lanes, swap lo/hi 64 bit(0x4E) and add
+    // [x, y, z, pad] + [z, pad, x, y] = [x+z, y+pad, x+z, y+pad]
     __m512i shuf1_lo = _mm512_shuffle_epi32(square_lo, static_cast<_MM_PERM_ENUM>(_MM_SHUFFLE(1, 0, 3, 2)));
     __m512i shuf1_hi = _mm512_shuffle_epi32(square_hi, static_cast<_MM_PERM_ENUM>(_MM_SHUFFLE(1, 0, 3, 2)));
 
     __m512i sum1_lo = _mm512_add_epi32(square_lo, shuf1_lo);
     __m512i sum1_hi = _mm512_add_epi32(square_hi, shuf1_hi);
 
+    //2nd : in 128 bit lane, swap close 32 bit (0xB1) and add
+    //[x+z, y+pad, ...] + [y+pad, x+z, ...] = [x+y+z+pad, x+y+z+pad, ...]
     __m512i shuf2_lo = _mm512_shuffle_epi32(sum1_lo, static_cast<_MM_PERM_ENUM>(_MM_SHUFFLE(2, 3, 0, 1)));
     __m512i shuf2_hi = _mm512_shuffle_epi32(sum1_hi, static_cast<_MM_PERM_ENUM>(_MM_SHUFFLE(2, 3, 0, 1)));
 
     __m512i sum2_lo = _mm512_add_epi32(sum1_lo, shuf2_lo);
     __m512i sum2_hi = _mm512_add_epi32(sum1_hi, shuf2_hi);
 
-    _mm512_store_si512((void *)out_lo, sum2_lo);
-    _mm512_store_si512((void *)out_hi, sum2_hi);
+    //Extract data from SIMD regis
+    _mm512_store_epi32(out_lo, sum2_lo);
+    _mm512_store_epi32(out_hi, sum2_hi);
 
     out[i + 0] = {out_lo[0],  (int)(i + 0)};
     out[i + 1] = {out_lo[4],  (int)(i + 1)};
@@ -345,18 +358,13 @@ public:
 
     // 2. calculate scores (runtime-dispatched: AVX-512 -> AVX2 -> scalar)
     size_t i = 0;
-    const size_t n_blocks = item_number / 8; // 8 vectors (64 bytes) per block
+    size_t n_blocks = item_number / 8;  // handle 8 vectors in one
 
-    // query in 32 bit (prevents overflow when calculating d0, d1, d2)
+    // save query vector into 32 bit array (prevent overflow when calculates d0, d1, d2)
     const int query32_arr[4] = {query_quantized[0], query_quantized[1],
                                 query_quantized[2], query_quantized[3]};
 
     static const simd::Level level = simd::detect_level();
-
-    static const bool logged = (std::cout << "[Ayin] SIMD path: "
-            << (level == simd::Level::AVX512 ? "AVX512" : level == simd::Level::AVX2 ? "AVX2" : "scalar")
-            << std::endl, true); (void)logged;
-
 #if defined(__GNUC__) && (defined(__x86_64__) || defined(__i386__))
     if (level == simd::Level::AVX512)
     {
@@ -372,8 +380,8 @@ public:
     }
 #endif
 
-    // scalar path: the remainder (not a multiple of 8), or everything on
-    // CPUs without AVX2
+    // handle the data's remainder is not multiples of 8
+    // (also everything, on CPUs without AVX2/AVX-512)
     for (; i < item_number; ++i)
     {
       const short *target = &this->data[i * 4];
