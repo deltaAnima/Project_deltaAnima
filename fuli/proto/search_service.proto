@@ -1,0 +1,16 @@
+syntax = "proto3";
+package search;
+
+service VectorOrchestrator {
+  rpc Search (SearchRequest) returns (SearchResponse);
+}
+
+message SearchRequest {
+  string query = 1;
+  int32 top_k = 2;
+}
+
+message SearchResponse {
+  repeated int64 ids = 1;
+  repeated float distances = 2;
+}

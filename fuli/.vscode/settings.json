@@ -1,0 +1,9 @@
+{
+    "cmake.buildDirectory": "${workspaceFolder}/build",
+    "cmake.exportCompileCommandsFile": true,
+    "clangd.arguments": [
+        "--compile-commands-dir=${workspaceFolder}/build",
+        "--header-insertion=never",
+        "-j=4"
+    ]
+}

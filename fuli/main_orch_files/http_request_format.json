@@ -1,0 +1,93 @@
+{
+  "user_name": "Justin",
+  "user_input": "tell me about the moon",
+  "context": null,
+  "config": {
+    "rag_policy": {
+      "target_domain": "both",
+      "pipeline_level": "v1_5_hybrid",
+      "dense_vector": null,
+      "top_k": 5,
+      "min_score_threshold": 0.6,
+      "memory_config": { 
+        "session_id": null, 
+        "user_id": null, 
+        "enable_time_decay": true, 
+        "recency_weight": 0.3, 
+        "importance_threshold": 0.5, 
+        "reference_timestamp": null 
+    },
+      "knowledge_config": { 
+        "collection_names": ["reminh_kb"], 
+        "sparse_vector": null, 
+        "hybrid_alpha": 0.7, 
+        "seed_entities": null, 
+        "max_hops": 1 
+    },
+      "fusion_config": { 
+        "memory_weight": 0.4, 
+        "knowledge_weight": 0.6, 
+        "interleave_results": false 
+    },
+      "granularity": "raw_chunk",
+      "context_window_size": 1,
+      "enable_rerank": false
+    },
+    "emotion_policy": {
+        "OCEAN": {
+            "Openness": 0.8,
+            "Conscientiousness": 0.7,
+            "Extraversion": 0.4,
+            "Agreeableness": 0.9,
+            "Neuroticism": 0.2
+        },
+        "AnalysisWeights": {
+            "stabilityRadius": 0.15,
+            "dampening_factor": 0.5,
+            "weightV_stress": 0.6,
+            "weightA_stress": 0.4,
+            "weightV_reward": 0.7,
+            "weightA_reward": 0.3,
+            "weight_k": 5.0,
+            "theta_0": 0.0
+        },
+        "FormulaWeights": {
+            "sensitivity": {
+            "pos_extraversion": 0.5,
+            "pos_openness": 0.2,
+            "neg_neuroticism": 0.8
+            },
+            "resistance": {
+            "base": 0.5,
+            "conscientiousness": 0.4,
+            "openness": -0.1,
+            "clamp_min": 0.1,
+            "clamp_max": 0.9
+            },
+            "decay": {
+            "base": 0.02,
+            "conscientiousness": 0.05,
+            "neuroticism": -0.02,
+            "clamp_min": 0.005,
+            "clamp_max": 0.15
+            }
+        },
+        "AdvancedConfig": {
+            "stress_threshold": 0.7,
+            "stress_sensitivity_factor": 1.2,
+            "lability_threshold": 0.5,
+            "lability_resistance_mult": 0.8,
+            "reward_threshold": 0.6,
+            "reward_decay_boost": 1.5,
+            "history_lookback_size": 200.0,
+            "dt_factor": 0.01,
+            "expression_r": 0.4,
+            "epsilon": 1e-09
+        },
+        "use_openjev": true,
+        "use_5090": false,
+        "fallback_to_5090": true
+    }
+
+  }
+}
