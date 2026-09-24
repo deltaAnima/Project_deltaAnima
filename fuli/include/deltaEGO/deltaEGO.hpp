@@ -1,9 +1,13 @@
 /**
  * deltaEGO public API.
  *
- * All engine internals (Int16Tensor/AVX-512 search, emotionPhysics, VAD math)
- * are hidden behind a Pimpl so that consumers of this header do not need to
- * see or link against json/yaml-cpp/AVX intrinsics directly.
+ * Ayin and Carmen (defined in deltaEGO.cpp) hold all the actual engine
+ * internals — Int16Tensor/AVX-512 search, emotionPhysics, VAD math for
+ * Ayin; the future OpenJEV text->VAD pipeline for Carmen. They're only
+ * forward-declared here and held by pointer so that consumers of this
+ * header do not need to see or link against json/yaml-cpp/AVX intrinsics
+ * directly — deltaEGO owns them directly, there is no intermediate Impl
+ * class in between.
  */
 #pragma once
 
@@ -12,33 +16,172 @@
 
 namespace deltaEGO {
 
-class deltaEGO {
-public:
-  // config_path: path to the YAML file with OCEAN/physics weights.
-  // def_V/def_A/def_D/def_radius: default (resting) VAD state.
-  deltaEGO(const std::string &config_path, float def_V, float def_A,
-           float def_D, float def_radius);
-  ~deltaEGO();
+  namespace structs
+  {
+      struct VAD_Point
+    {
+      float V;
+      float A;
+      float D;
+      float radius;
+    };
 
-  deltaEGO(const deltaEGO &) = delete;
-  deltaEGO &operator=(const deltaEGO &) = delete;
-  deltaEGO(deltaEGO &&) noexcept;
-  deltaEGO &operator=(deltaEGO &&) noexcept;
+    struct Ratio
+    {
+          double stress_raw;
+          double reward_raw;
+          double ratio_total;
+          double stress_ratio;
+          double reward_ratio;
+    };
 
-  // Loads the VAD term database (see VAD_DB/VAD.json) used for nearest
-  // neighbor emotion-term lookup. Returns false on parse/IO failure.
-  bool load_vad_db(const std::string &json_path);
+    // Analysis
+    struct OCEAN
+    {
+        float Openness;
+        float Conscientiousness;
+        float Extraversion;
+        float Agreeableness;
+        float Neuroticism;
+    };
+    struct DynamicPhysicsWeights
+    {
+        // sensitivity with emotion_resistance
+        float sensitivity_positive;
+        float sensitivity_negative;
+        // how much Reminh weights on emotion
+        float emotion_resistance;
 
-  // Feeds one VAD stimulus into the physics engine and returns the
-  // resulting state + analysis as a JSON string.
-  std::string process_stimulus(float v, float a, float d);
+        // How fast Reminh come back to nomal state
+        float bias_decay_rate;
+    };
+    struct AnalysisConfigWeights
+    {
+        double stabilityRadius;
+        double weightA_stress;
+        double weightV_stress;
+        double weightV_reward;
+        double weightA_reward;
+        double dampening_factor;
+        double weight_k;
+        double theta_0;
+    };
+    struct calculatePhysicsWeights
+    {
+      struct
+      {
+        // 1. Sensitivity
+        double pos_extraversion_sensi;
+        double pos_openness_sensi;
+        double neg_neuroticism_sensi;
+      }Sensitivity;
+      struct
+      {
+        // 2. resistance
+        double base_resis;
+        double conscientiousness_resis;
+        double openness_resis;
+        float  clamp_min_resis;
+        float  clamp_max_resis;
+      }resistance;
+      struct
+      {
+        // 3. decay
+        double base_decay;
+        double conscientiousness_decay;
+        double neuroticism_decay;
+        float  clamp_min_decay;
+        float  clamp_max_decay;
+      }decay;
+    };
+    struct AdvancedConfig
+    {
+        double stress_threshold_modu;
+        double stress_sensitivity_factor_modu;
+        double lability_threshold_advcon;
+        double lability_resistance_mult_modu;
+        double reward_threshold;
+        double reward_decay_boost_modu;
+        double history_lookback_size;
+        double dt_factor;
+        double expression_r;
+        double epsilon;
+    };
+    struct AnalysisResult
+    {
+        struct
+        {
+            double stress, reward, deviation;
+            double ratio_total, stress_ratio, reward_ratio;
+        } instant;
 
-  // Re-reads the YAML config passed to the constructor.
-  bool reload_config();
+        struct
+        {
+            VAD_Point delta;
+            double affective_lability;
+        } dynamics;
 
-private:
-  class Impl;
-  std::unique_ptr<Impl> impl_;
-};
+        struct
+        {
+            double stress, reward, total;
+            double stress_ratio, reward_ratio;
+        } cumulative;
+
+        struct
+        {
+            std::string front_expression_name;
+            int similarity;
+            int intensity;
+
+        } front;
+    };
+  }
+
+  namespace func
+  {
+    float lerp(float target, float current, float resistance);
+    double get_distance(const structs::VAD_Point& a, const structs::VAD_Point& b);
+    double sigmoid(double x);
+  }
+
+  namespace Ayin
+  {
+    class Ayin;
+    class Angela;
+    class Roland;
+  }
+  namespace Carmen
+  {
+    class Carmen;
+  }
+
+  class deltaEGO {
+  public:
+    // config_path: path to the YAML file with OCEAN/physics weights.
+    // def_V/def_A/def_D/def_radius: default (resting) VAD state.
+    deltaEGO(const std::string &config_path, float def_V, float def_A,
+            float def_D, float def_radius);
+    ~deltaEGO();
+
+    deltaEGO(const deltaEGO &) = delete;
+    deltaEGO &operator=(const deltaEGO &) = delete;
+    deltaEGO(deltaEGO &&) noexcept;
+    deltaEGO &operator=(deltaEGO &&) noexcept;
+
+    // Loads the VAD term database (see VAD_DB/VAD.json) used for nearest
+    // neighbor emotion-term lookup. Returns false on parse/IO failure.
+    bool load_vad_db(const std::string &json_path);
+
+    // Feeds one VAD stimulus into the physics engine and returns the
+    // resulting state + analysis as a JSON string.
+    std::string process_stimulus(float v, float a, float d);
+
+    // Re-reads the YAML config passed to the constructor.
+    bool reload_config();
+
+  private:
+    std::unique_ptr<Ayin::Ayin> ayin_;
+    std::unique_ptr<Carmen::Carmen> carmen_; // unused until OpenJEV integration lands
+  };
 
 } // namespace deltaEGO

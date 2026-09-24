@@ -93,6 +93,8 @@ set(COMMON_SOURCES
     src/clients/embedding_client.cpp
     src/http/http_server.cpp
     src/deltaEGO/deltaEGO.cpp
+    src/deltaEGO/Ayin.cpp
+    src/deltaEGO/Carmen.cpp
     src/health/health_checker.cpp
     ${PROTO_SRCS}
     ${GRPC_SRCS}
@@ -110,8 +112,8 @@ endif()
 
 add_executable(orchestrator_server ${COMMON_SOURCES})
 
-# deltaEGO's search_knn uses AVX-512 intrinsics directly (Ryzen 9 9950x target)
-set_source_files_properties(src/deltaEGO/deltaEGO.cpp PROPERTIES
+# Ayin's Int16Tensor::search_knn uses AVX-512 intrinsics directly (Ryzen 9 9950x target)
+set_source_files_properties(src/deltaEGO/Ayin.cpp PROPERTIES
     COMPILE_OPTIONS "-march=native"
 )
 
