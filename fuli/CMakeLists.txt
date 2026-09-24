@@ -31,7 +31,10 @@ foreach(_header_only_boost_lib asio assert core mp11 throw_exception)
     endif()
 endforeach()
 
-find_package(Protobuf CONFIG REQUIRED)
+find_package(Protobuf CONFIG QUIET)
+if(NOT Protobuf_FOUND)
+  find_package(Protobuf REQUIRED)
+endif()
 find_package(gRPC CONFIG REQUIRED)
 
 FetchContent_Declare(
