@@ -5,7 +5,9 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 set(CMAKE_POLICY_VERSION_MINIMUM 3.10)
-cmake_policy(SET CMP0167 NEW) # find_package(Boost) uses BoostConfig.cmake
+if(POLICY CMP0167)
+    cmake_policy(SET CMP0167 NEW) # find_package(Boost) uses BoostConfig.cmake
+endif()
 
 option(ENABLE_GPU "Enable Faiss GPU and CUDA support" ON)
 
