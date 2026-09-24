@@ -1,8 +1,15 @@
 #pragma once
 
-// C++ mirror of Persona/RAG_schemas.py::RAGQueryOrder. Field names and
-// defaults must stay in sync with that file by hand — there is no shared
-// codegen between the Python and C++ sides yet.
+// C++ mirror of Persona/RAG_schemas.py::RAGQueryOrder (a pydantic model on
+// the Python side). Every struct/enum here exists purely so we can parse
+// the JSON that FuliHandler sends us — there is no shared codegen between
+// the Python and C++ sides, so if someone changes a field name or default
+// in RAG_schemas.py, this file has to be updated by hand to match.
+//
+// How the parsing works: nlohmann::json looks for a free function
+// `void from_json(const json&, T&)` in the same namespace as T, and calls
+// it automatically whenever you do `j.get<T>()` or `j.at("key").get<T>()`.
+// That's why every struct below is followed by its own from_json().
 #include <map>
 #include <optional>
 #include <string>
@@ -14,6 +21,16 @@ namespace schemas {
 
 using json = nlohmann::json;
 
+// --- Enums --------------------------------------------------------------
+// Python's RAGQueryOrder uses `str, Enum` classes, so on the wire these
+// arrive as plain strings like "memory" or "v1_5_hybrid", not integers.
+// NLOHMANN_JSON_SERIALIZE_ENUM wires up from_json/to_json for an enum
+// class given a list of (enum value, JSON string) pairs. The first pair
+// listed is also the value used if we ever need to serialize an
+// out-of-range int back to JSON (not something we rely on here).
+
+// Which corpus to search: memory (conversation history), knowledge
+// (documents/wiki), or both (search both, then fuse the two result sets).
 enum class TargetDomain { MEMORY_ONLY, KNOWLEDGE_ONLY, BOTH };
 NLOHMANN_JSON_SERIALIZE_ENUM(TargetDomain,
                               {
@@ -22,6 +39,10 @@ NLOHMANN_JSON_SERIALIZE_ENUM(TargetDomain,
                                   {TargetDomain::BOTH, "both"},
                               })
 
+// How sophisticated the retrieval should be. Only V1_DENSE (plain
+// embedding similarity search) is actually implemented right now — see
+// pipeline/orchestrator.cpp. The other two are accepted but currently
+// treated the same as V1_DENSE (no hybrid/graph logic wired in yet).
 enum class PipelineLevel { V1_DENSE, V1_5_HYBRID, V2_GRAPH_AWARE };
 NLOHMANN_JSON_SERIALIZE_ENUM(
     PipelineLevel, {
@@ -30,6 +51,9 @@ NLOHMANN_JSON_SERIALIZE_ENUM(
                         {PipelineLevel::V2_GRAPH_AWARE, "v2_graph_aware"},
                     })
 
+// How much surrounding context to return per hit. Also accepted-but-unused
+// for now — the MVP always returns whatever chunk granularity the stored
+// vector represents, no window expansion.
 enum class Granularity { RAW_CHUNK, PARENT_CHUNK, WINDOW_EXPANDED };
 NLOHMANN_JSON_SERIALIZE_ENUM(
     Granularity, {
@@ -38,15 +62,30 @@ NLOHMANN_JSON_SERIALIZE_ENUM(
                      {Granularity::WINDOW_EXPANDED, "window_expanded"},
                  })
 
+// --- MemoryQueryConfig ---------------------------------------------------
+// Options that only make sense when searching conversational memory
+// (as opposed to the knowledge base). NONE of the filtering described
+// here (time decay, importance threshold, session/user scoping) is
+// actually applied yet — the MVP pipeline parses these fields and then
+// ignores them. That's the next piece of work after this skeleton.
 struct MemoryQueryConfig {
   std::optional<std::string> session_id;
   std::optional<std::string> user_id;
-  bool enable_time_decay = true;
-  float recency_weight = 0.3f;
-  float importance_threshold = 0.5f;
-  std::optional<std::string> reference_timestamp; // kept as raw ISO string
+  bool enable_time_decay = true;   // weight older memories lower
+  float recency_weight = 0.3f;     // how strongly recency affects score
+  float importance_threshold = 0.5f; // drop memories scored below this
+  std::optional<std::string> reference_timestamp; // ISO string, kept raw
+                                                    // (no datetime parsing
+                                                    // yet — "now" is
+                                                    // implied when absent)
 };
 
+// Every from_json below follows the same defensive pattern:
+//   - required fields use j.at("key") (throws if missing — fail loudly)
+//   - optional fields check j.contains(...) && !is_null() first
+//   - fields with a Python-side default use j.value("key", default)
+// This mirrors pydantic's own defaulting behavior so a partial JSON
+// payload (like the "config" examples in main_orch_files/) still parses.
 inline void from_json(const json &j, MemoryQueryConfig &c) {
   if (j.contains("session_id") && !j.at("session_id").is_null())
     c.session_id = j.at("session_id").get<std::string>();
@@ -60,10 +99,20 @@ inline void from_json(const json &j, MemoryQueryConfig &c) {
     c.reference_timestamp = j.at("reference_timestamp").get<std::string>();
 }
 
+// --- KnowledgeQueryConfig -------------------------------------------------
+// Options for searching the knowledge base (docs/wiki) domain. Like
+// MemoryQueryConfig, this parses cleanly but isn't acted on yet — there is
+// no knowledge-base search path wired into the orchestrator yet, only
+// memory-domain dense search.
 struct KnowledgeQueryConfig {
   std::vector<std::string> collection_names{"default_kb"};
+  // SPLADE/BM25 style {token: weight} map for sparse retrieval. Building
+  // this (and the matching Redis-backed sparse index) is future work —
+  // see the RAG 2.0 discussion earlier in the project notes.
   std::optional<std::map<std::string, float>> sparse_vector;
-  float hybrid_alpha = 0.7f;
+  float hybrid_alpha = 0.7f; // 1.0 = dense only, 0.0 = sparse only
+  // Knowledge-graph traversal seeds/hop-count for v2_graph_aware. Also
+  // future work — no graph store exists yet.
   std::optional<std::vector<std::string>> seed_entities;
   int max_hops = 1;
 };
@@ -79,10 +128,14 @@ inline void from_json(const json &j, KnowledgeQueryConfig &c) {
   c.max_hops = j.value("max_hops", 1);
 }
 
+// --- DualTrackFusionConfig -------------------------------------------------
+// How to combine memory-domain hits and knowledge-domain hits when
+// target_domain == BOTH. Only relevant once both domains are actually
+// being searched (not yet — see TargetDomain comment above).
 struct DualTrackFusionConfig {
   float memory_weight = 0.4f;
   float knowledge_weight = 0.6f;
-  bool interleave_results = false;
+  bool interleave_results = false; // [mem1, kb1, mem2, ...] vs score-sorted
 };
 
 inline void from_json(const json &j, DualTrackFusionConfig &c) {
@@ -91,18 +144,34 @@ inline void from_json(const json &j, DualTrackFusionConfig &c) {
   c.interleave_results = j.value("interleave_results", false);
 }
 
+// --- RAGQueryOrder (top-level) ---------------------------------------------
+// This is the exact struct that config.rag_policy in the incoming JSON
+// request deserializes into. See schemas/fuli_schemas.hpp for where it
+// plugs into the full request.
 struct RAGQueryOrder {
   TargetDomain target_domain = TargetDomain::BOTH;
   PipelineLevel pipeline_level = PipelineLevel::V1_5_HYBRID;
-  std::optional<std::vector<float>> dense_vector; // null => Fuli embeds it
-  int top_k = 5;
-  float min_score_threshold = 0.6f;
+
+  // If the caller already computed an embedding, it's passed here and we
+  // skip calling EmbeddingClient::Embed() entirely (see
+  // Orchestrator::HandleContextRequest). Normally this is null/absent —
+  // FuliHandler's docstring explicitly says "Fuli embeds the input
+  // itself", meaning WE are expected to call TEI, not the caller.
+  std::optional<std::vector<float>> dense_vector;
+
+  int top_k = 5;                    // how many hits to return
+  float min_score_threshold = 0.6f; // not yet enforced by the pipeline
+
+  // Both configs are optional because the Python side only fills in the
+  // one(s) matching target_domain (e.g. knowledge_config stays null when
+  // target_domain == MEMORY_ONLY).
   std::optional<MemoryQueryConfig> memory_config;
   std::optional<KnowledgeQueryConfig> knowledge_config;
-  DualTrackFusionConfig fusion_config;
+  DualTrackFusionConfig fusion_config; // always present, has its own defaults
+
   Granularity granularity = Granularity::RAW_CHUNK;
   int context_window_size = 1;
-  bool enable_rerank = false;
+  bool enable_rerank = false; // not yet wired to the TEI reranker
 };
 
 inline void from_json(const json &j, RAGQueryOrder &o) {
