@@ -4,6 +4,8 @@ project(VectorOrchestrator LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+set(CMAKE_POLICY_VERSION_MINIMUM 3.10)
+cmake_policy(SET CMP0167 NEW) # find_package(Boost) uses BoostConfig.cmake
 
 option(ENABLE_GPU "Enable Faiss GPU and CUDA support" ON)
 
@@ -12,8 +14,9 @@ include(FetchContent)
 find_package(Threads REQUIRED)
 find_package(Boost REQUIRED COMPONENTS system)
 find_package(OpenMP REQUIRED)
+find_package(yaml-cpp REQUIRED)
 
-# This Boost 1.85 install only generated CMake package configs for the
+# This Boost install only generated CMake package configs for the
 # compiled components (system/thread/context/coroutine/chrono); header-only
 # libraries boost_redis links against have no per-component target here.
 # Shim them onto the umbrella Boost::boost include target.
@@ -26,8 +29,8 @@ foreach(_header_only_boost_lib asio assert core mp11 throw_exception)
     endif()
 endforeach()
 
-find_package(Protobuf REQUIRED)
-find_package(gRPC REQUIRED)
+find_package(Protobuf CONFIG REQUIRED)
+find_package(gRPC CONFIG REQUIRED)
 
 FetchContent_Declare(
     asio_grpc
@@ -50,16 +53,6 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(concurrentqueue)
 
-set(YAML_CPP_BUILD_TESTS OFF CACHE BOOL "" FORCE)
-set(YAML_CPP_BUILD_TOOLS OFF CACHE BOOL "" FORCE)
-set(YAML_BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
-FetchContent_Declare(
-    yaml_cpp
-    GIT_REPOSITORY https://github.com/jbeder/yaml-cpp.git
-    GIT_TAG        0.8.0
-)
-FetchContent_MakeAvailable(yaml_cpp)
-
 set(PROTO_SRC_DIR ${CMAKE_CURRENT_SOURCE_DIR}/proto)
 set(PROTO_GEN_DIR ${CMAKE_CURRENT_BINARY_DIR}/generated)
 file(MAKE_DIRECTORY ${PROTO_GEN_DIR})
@@ -71,18 +64,15 @@ set(PROTO_HDRS "${PROTO_GEN_DIR}/search_service.pb.h")
 set(GRPC_SRCS  "${PROTO_GEN_DIR}/search_service.grpc.pb.cc")
 set(GRPC_HDRS  "${PROTO_GEN_DIR}/search_service.grpc.pb.h")
 
-
-find_program(GRPC_CPP_PLUGIN grpc_cpp_plugin)
-
 add_custom_command(
     OUTPUT ${PROTO_SRCS} ${PROTO_HDRS} ${GRPC_SRCS} ${GRPC_HDRS}
     COMMAND protobuf::protoc
         --proto_path=${PROTO_SRC_DIR}
         --cpp_out=${PROTO_GEN_DIR}
         --grpc_out=${PROTO_GEN_DIR}
-        --plugin=protoc-gen-grpc=${GRPC_CPP_PLUGIN}
+        --plugin=protoc-gen-grpc=$<TARGET_FILE:gRPC::grpc_cpp_plugin>
         ${PROTO_FILES}
-    DEPENDS ${PROTO_FILES}
+    DEPENDS ${PROTO_FILES} protobuf::protoc gRPC::grpc_cpp_plugin
     COMMENT "Compiling Protobuf definitions..."
 )
 
@@ -111,11 +101,6 @@ else()
 endif()
 
 add_executable(orchestrator_server ${COMMON_SOURCES})
-
-# Ayin's Int16Tensor::search_knn uses AVX-512 intrinsics directly (Ryzen 9 9950x target)
-set_source_files_properties(src/deltaEGO/Ayin.cpp PROPERTIES
-    COMPILE_OPTIONS "-march=native"
-)
 
 target_include_directories(orchestrator_server PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/include
