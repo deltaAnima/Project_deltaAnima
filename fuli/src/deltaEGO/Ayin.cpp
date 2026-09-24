@@ -1,7 +1,8 @@
 /**
  * Ayin — VAD finding-and-processing pipeline.
- * Upgraded emotion search using CPU cache. Optimized only for Ryzen 9
- * 9950x (see the AVX-512 code in Int16Tensor below).
+ * Upgraded emotion search using CPU cache. Int16Tensor's distance scan is
+ * runtime-dispatched: AVX-512 (e.g. Ryzen 9 9950x) -> AVX2 (e.g. Core Ultra
+ * 265K) -> scalar, so one binary runs on any x86-64 CPU.
  */
 #include "deltaEGO/Ayin.hpp"
 
@@ -9,7 +10,7 @@
 #include <cstddef>
 #include <cstring> // for memset
 #include <emmintrin.h>
-#include <immintrin.h> // AVX-512
+#include <immintrin.h> // AVX2 / AVX-512 intrinsics
 #include <iostream>
 #include <string>
 #include <vector>
@@ -90,6 +91,138 @@ void NPCIE_AlignedFree(void *ptr) { free(ptr); }
 
 namespace deltaEGO {
 namespace Ayin {
+
+// ==========================================
+// SIMD distance kernels for Int16Tensor::search_knn.
+//
+// Each kernel scores `n_blocks` blocks of 8 vectors (8 x 4 shorts = 64 bytes,
+// 64-byte aligned) against one quantized query, writing {squared_dist, index}
+// pairs into `out[first_index + 0 .. first_index + n_blocks*8)`.
+//
+// The per-function `target` attribute lets AVX2/AVX-512 code live in the same
+// translation unit with no global -march flags; the CPU is checked once at
+// runtime (simd::detect_level) so an AVX-512 kernel is never executed on a CPU
+// without it (Intel consumer CPUs such as Arrow Lake have no AVX-512).
+// ==========================================
+// BEGIN-SIMD-KERNELS
+namespace simd {
+
+enum class Level { Scalar, AVX2, AVX512 };
+
+inline Level detect_level()
+{
+#if defined(__GNUC__) && (defined(__x86_64__) || defined(__i386__))
+  __builtin_cpu_init();
+  if (__builtin_cpu_supports("avx512f"))
+    return Level::AVX512;
+  if (__builtin_cpu_supports("avx2"))
+    return Level::AVX2;
+#endif
+  return Level::Scalar;
+}
+
+#if defined(__GNUC__) && (defined(__x86_64__) || defined(__i386__))
+
+__attribute__((target("avx512f")))
+inline void score_blocks_avx512(const short *data, size_t n_blocks,
+                                const int query32[4], std::pair<int, int> *out,
+                                size_t first_index)
+{
+  __m128i q_128 = _mm_loadu_si128((const __m128i *)query32);
+  __m512i v_q32 = _mm512_broadcast_i32x4(q_128);
+
+  alignas(64) int out_lo[16];
+  alignas(64) int out_hi[16];
+
+  size_t i = first_index;
+  for (size_t block = 0; block < n_blocks; ++block, i += 8)
+  {
+    __m512i vec_target = _mm512_load_si512((const void *)&data[i * 4]);
+
+    __m256i target_lo = _mm512_castsi512_si256(vec_target);
+    __m256i target_hi = _mm512_extracti64x4_epi64(vec_target, 1);
+
+    __m512i vec_t32_lo = _mm512_cvtepi16_epi32(target_lo);
+    __m512i vec_t32_hi = _mm512_cvtepi16_epi32(target_hi);
+
+    __m512i diff_lo = _mm512_sub_epi32(vec_t32_lo, v_q32);
+    __m512i diff_hi = _mm512_sub_epi32(vec_t32_hi, v_q32);
+
+    __m512i square_lo = _mm512_mullo_epi32(diff_lo, diff_lo);
+    __m512i square_hi = _mm512_mullo_epi32(diff_hi, diff_hi);
+
+    // per 128-bit lane: [x, y, z, pad] -> every element = x+y+z+pad
+    __m512i shuf1_lo = _mm512_shuffle_epi32(square_lo, static_cast<_MM_PERM_ENUM>(_MM_SHUFFLE(1, 0, 3, 2)));
+    __m512i shuf1_hi = _mm512_shuffle_epi32(square_hi, static_cast<_MM_PERM_ENUM>(_MM_SHUFFLE(1, 0, 3, 2)));
+
+    __m512i sum1_lo = _mm512_add_epi32(square_lo, shuf1_lo);
+    __m512i sum1_hi = _mm512_add_epi32(square_hi, shuf1_hi);
+
+    __m512i shuf2_lo = _mm512_shuffle_epi32(sum1_lo, static_cast<_MM_PERM_ENUM>(_MM_SHUFFLE(2, 3, 0, 1)));
+    __m512i shuf2_hi = _mm512_shuffle_epi32(sum1_hi, static_cast<_MM_PERM_ENUM>(_MM_SHUFFLE(2, 3, 0, 1)));
+
+    __m512i sum2_lo = _mm512_add_epi32(sum1_lo, shuf2_lo);
+    __m512i sum2_hi = _mm512_add_epi32(sum1_hi, shuf2_hi);
+
+    _mm512_store_si512((void *)out_lo, sum2_lo);
+    _mm512_store_si512((void *)out_hi, sum2_hi);
+
+    out[i + 0] = {out_lo[0],  (int)(i + 0)};
+    out[i + 1] = {out_lo[4],  (int)(i + 1)};
+    out[i + 2] = {out_lo[8],  (int)(i + 2)};
+    out[i + 3] = {out_lo[12], (int)(i + 3)};
+
+    out[i + 4] = {out_hi[0],  (int)(i + 4)};
+    out[i + 5] = {out_hi[4],  (int)(i + 5)};
+    out[i + 6] = {out_hi[8],  (int)(i + 6)};
+    out[i + 7] = {out_hi[12], (int)(i + 7)};
+  }
+}
+
+// Same math as the AVX-512 kernel on 256-bit registers: one register holds
+// 2 vectors (2 x 4 ints), so a block of 8 vectors takes 4 groups.
+__attribute__((target("avx2")))
+inline void score_blocks_avx2(const short *data, size_t n_blocks,
+                              const int query32[4], std::pair<int, int> *out,
+                              size_t first_index)
+{
+  __m128i q_128 = _mm_loadu_si128((const __m128i *)query32);
+  __m256i v_q32 = _mm256_broadcastsi128_si256(q_128);
+
+  size_t i = first_index;
+  for (size_t block = 0; block < n_blocks; ++block, i += 8)
+  {
+    // 2 x 32 bytes = 8 vectors
+    __m256i raw0 = _mm256_load_si256((const __m256i *)&data[i * 4]);
+    __m256i raw1 = _mm256_load_si256((const __m256i *)&data[i * 4 + 16]);
+
+    // 16 bit -> 32 bit; each group = 2 vectors (one per 128-bit lane)
+    __m256i g[4] = {
+        _mm256_cvtepi16_epi32(_mm256_castsi256_si128(raw0)),
+        _mm256_cvtepi16_epi32(_mm256_extracti128_si256(raw0, 1)),
+        _mm256_cvtepi16_epi32(_mm256_castsi256_si128(raw1)),
+        _mm256_cvtepi16_epi32(_mm256_extracti128_si256(raw1, 1)),
+    };
+
+    for (int k = 0; k < 4; ++k)
+    {
+      __m256i diff = _mm256_sub_epi32(g[k], v_q32);
+      __m256i sq = _mm256_mullo_epi32(diff, diff);
+      // horizontal add inside each 128-bit lane: every element = x+y+z+pad
+      __m256i s = _mm256_hadd_epi32(sq, sq);
+      s = _mm256_hadd_epi32(s, s);
+
+      size_t v = i + (size_t)k * 2;
+      out[v + 0] = {_mm256_extract_epi32(s, 0), (int)(v + 0)};
+      out[v + 1] = {_mm256_extract_epi32(s, 4), (int)(v + 1)};
+    }
+  }
+}
+
+#endif // x86 GCC/Clang
+
+} // namespace simd
+// END-SIMD-KERNELS
 
 /**
  * An 1d array contains 2D Tensor data
@@ -210,75 +343,37 @@ public:
       query_quantized[i] = static_cast<short>(val);
     }
 
-    // 2. calculate score AVX-512
+    // 2. calculate scores (runtime-dispatched: AVX-512 -> AVX2 -> scalar)
     size_t i = 0;
-    size_t n_blocks = item_number / 8;  // handle 8 vectors in one
+    const size_t n_blocks = item_number / 8; // 8 vectors (64 bytes) per block
 
-    // save query vector into 32 bit array (prevent overflow when calculates d0, d1, d2)
-    int query32_arr[4] = {query_quantized[0], query_quantized[1], query_quantized[2], query_quantized[3]};
-    // load 128 bitss(4 ints) and copy and paste to 512 bit regis 4 times(Broadcast)
-    __m128i q_128 = _mm_loadu_si128((__m128i*)query32_arr);
-    __m512i v_q32 = _mm512_broadcast_i32x4(q_128);
+    // query in 32 bit (prevents overflow when calculating d0, d1, d2)
+    const int query32_arr[4] = {query_quantized[0], query_quantized[1],
+                                query_quantized[2], query_quantized[3]};
 
-    // aligned array to extract results
-    alignas(64) int out_lo[16];
-    alignas(64) int out_hi[16];
+    static const simd::Level level = simd::detect_level();
 
-    // handle 8 vectors(32 short = 64 bytes) per loop
-    for(size_t block = 0; block < n_blocks; ++block, i += 8)
+    static const bool logged = (std::cout << "[Ayin] SIMD path: "
+            << (level == simd::Level::AVX512 ? "AVX512" : level == simd::Level::AVX2 ? "AVX2" : "scalar")
+            << std::endl, true); (void)logged;
+
+#if defined(__GNUC__) && (defined(__x86_64__) || defined(__i386__))
+    if (level == simd::Level::AVX512)
     {
-      // laod aligned 64 byte data with _mm512_load_si512
-      __m512i vec_target = _mm512_load_si512((__m512i*)&this->data[i * 4]);
-
-      // to convert 16 bit -> 32 bit, devide data as upper/lower 256 bits
-      __m256i target_lo = _mm512_castsi512_si256(vec_target);
-      __m256i target_hi = _mm512_extracti64x4_epi64(vec_target, 1);
-
-      //16 bit -> 32 bit  up casting
-      __m512i vec_t32_lo = _mm512_cvtepi16_epi32(target_lo);
-      __m512i vec_t32_hi = _mm512_cvtepi16_epi32(target_hi);
-
-      // calculate difference (Target - Query)
-      __m512i diff_lo = _mm512_sub_epi32(vec_t32_lo, v_q32);
-      __m512i diff_hi = _mm512_sub_epi32(vec_t32_hi, v_q32);
-
-      // power (Diff * Diff)
-      __m512i square_lo = _mm512_mullo_epi32(diff_lo, diff_lo);
-      __m512i square_hi = _mm512_mullo_epi32(diff_hi, diff_hi);
-
-      // 1st : addition with Suffle and Adds
-      // in 128 bit lanes, swap lo/hi 64 bit(0x4E) and add
-      // [x, y, z, pad] + [z, pad, x, y] = [x+z, y+pad, x+z, y+pad]
-      __m512i shuf1_lo = _mm512_shuffle_epi32(square_lo, static_cast<_MM_PERM_ENUM>(_MM_SHUFFLE(1, 0, 3, 2)));
-      __m512i shuf1_hi = _mm512_shuffle_epi32(square_hi, static_cast<_MM_PERM_ENUM>(_MM_SHUFFLE(1, 0, 3, 2)));
-
-      __m512i sum1_lo = _mm512_add_epi32(square_lo, shuf1_lo);
-      __m512i sum1_hi = _mm512_add_epi32(square_hi, shuf1_hi);
-
-      //2nd : in 128 bit lane, swap close 32 bit (0xB1) and add
-      //[x+z, y+pad, ...] + [y+pad, x+z, ...] = [x+y+z+pad, x+y+z+pad, ...]
-      __m512i shuf2_lo = _mm512_shuffle_epi32(sum1_lo, static_cast<_MM_PERM_ENUM>(_MM_SHUFFLE(2, 3, 0, 1)));
-      __m512i shuf2_hi = _mm512_shuffle_epi32(sum1_hi, static_cast<_MM_PERM_ENUM>(_MM_SHUFFLE(2, 3, 0, 1)));
-
-      __m512i sum2_lo = _mm512_add_epi32(sum1_lo, shuf2_lo);
-      __m512i sum2_hi = _mm512_add_epi32(sum1_hi, shuf2_hi);
-
-      //Extract data from SIMD regis
-      _mm512_store_epi32(out_lo, sum2_lo);
-      _mm512_store_epi32(out_hi, sum2_hi);
-
-      this->score_buffer[i + 0] = {out_lo[0],  (int)(i + 0)};
-      this->score_buffer[i + 1] = {out_lo[4],  (int)(i + 1)};
-      this->score_buffer[i + 2] = {out_lo[8],  (int)(i + 2)};
-      this->score_buffer[i + 3] = {out_lo[12], (int)(i + 3)};
-
-      this->score_buffer[i + 4] = {out_hi[0],  (int)(i + 4)};
-      this->score_buffer[i + 5] = {out_hi[4],  (int)(i + 5)};
-      this->score_buffer[i + 6] = {out_hi[8],  (int)(i + 6)};
-      this->score_buffer[i + 7] = {out_hi[12], (int)(i + 7)};
+      simd::score_blocks_avx512(this->data, n_blocks, query32_arr,
+                                this->score_buffer.data(), 0);
+      i = n_blocks * 8;
     }
+    else if (level == simd::Level::AVX2)
+    {
+      simd::score_blocks_avx2(this->data, n_blocks, query32_arr,
+                              this->score_buffer.data(), 0);
+      i = n_blocks * 8;
+    }
+#endif
 
-    // handle the data's remainder is not multiples of 8
+    // scalar path: the remainder (not a multiple of 8), or everything on
+    // CPUs without AVX2
     for (; i < item_number; ++i)
     {
       const short *target = &this->data[i * 4];
@@ -363,7 +458,7 @@ public:
 
 /**
  * Angela: owns the "VAD finding" half of Ayin's job — given a VAD state,
- * find the nearest known emotion term via Int16Tensor's AVX-512 search.
+ * find the nearest known emotion term via Int16Tensor's SIMD search.
  */
 class Angela
 {
