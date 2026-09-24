@@ -26,7 +26,8 @@ class Angela; // vector search — defined in Ayin.cpp
 // Roland first (physics update), feeds the resulting state to Angela
 // (nearest-term search), and combines both into one result. No math or
 // search logic of its own — see Ayin.cpp for where that actually lives.
-class Ayin {
+class Ayin 
+{
 public:
   Ayin(const std::string &config_path, float def_V, float def_A, float def_D,
        float def_radius);
@@ -41,7 +42,8 @@ public:
   // Everything deltaEGO::deltaEGO needs back from one processing pass, so
   // it can assemble the response JSON without needing to know how any of
   // it was computed.
-  struct ProcessResult {
+  struct ProcessResult 
+  {
     structs::VAD_Point current_state;
     structs::AnalysisResult analysis;
     std::string emotion_term;

@@ -5,7 +5,8 @@
 // YAML/env-based service registry yet. When you add more deployment
 // targets (dev/staging/prod, multiple GPU hosts, etc.) this is the file
 // that should turn into a loaded config struct instead.
-namespace config {
+namespace config 
+{
 
 // bge-m3 (HF text-embeddings-inference) dense embedding output size.
 // This MUST match whatever embedding model you actually point

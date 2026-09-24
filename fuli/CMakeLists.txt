@@ -89,7 +89,7 @@ add_custom_command(
 set(COMMON_SOURCES
     src/main.cpp
     src/pipeline/orchestrator.cpp
-    src/clients/redis_client.cpp
+    src/clients/redis_db_client.cpp
     src/clients/embedding_client.cpp
     src/http/http_server.cpp
     src/deltaEGO/deltaEGO.cpp

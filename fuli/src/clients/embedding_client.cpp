@@ -40,7 +40,7 @@ net::awaitable<std::vector<float>> EmbeddingClient::Embed(
   beast::tcp_stream stream(executor);
 
   auto endpoints =
-      co_await resolver.async_resolve(host_, port_, net::use_awaitable);
+      co_await resolver.async_resolve(this->host_, this->port_, net::use_awaitable);
   co_await stream.async_connect(endpoints, net::use_awaitable);
 
   // TEI's /embed accepts {"inputs": "<text>"} for a single string (it
@@ -52,7 +52,7 @@ net::awaitable<std::vector<float>> EmbeddingClient::Embed(
   json body{{"inputs", text}, {"normalize", true}};
 
   http::request<http::string_body> req{http::verb::post, "/embed", 11};
-  req.set(http::field::host, host_);
+  req.set(http::field::host, this->host_);
   req.set(http::field::user_agent, "fuli-orchestrator");
   req.set(http::field::content_type, "application/json");
   req.body() = body.dump();
@@ -68,10 +68,11 @@ net::awaitable<std::vector<float>> EmbeddingClient::Embed(
   // yet), so shut the write side down once we have our answer. Errors
   // here are expected/harmless (e.g. peer already closed) — hence the
   // error_code overload instead of the throwing one.
-  beast::error_code ec;
-  stream.socket().shutdown(tcp::socket::shutdown_both, ec);
+  beast::error_code error_code;
+  stream.socket().shutdown(tcp::socket::shutdown_both, error_code);
 
-  if (res.result() != http::status::ok) {
+  if (res.result() != http::status::ok) 
+  {
     throw std::runtime_error("embedding request failed: HTTP " +
                               std::to_string(res.result_int()) + " " +
                               res.body());
@@ -81,7 +82,8 @@ net::awaitable<std::vector<float>> EmbeddingClient::Embed(
   // input string: [[0.01, -0.02, ...]]. Since we always send exactly one
   // input, we only ever need row 0.
   json parsed = json::parse(res.body());
-  if (!parsed.is_array() || parsed.empty()) {
+  if (!parsed.is_array() || parsed.empty()) 
+  {
     throw std::runtime_error("unexpected /embed response shape: " +
                               res.body());
   }

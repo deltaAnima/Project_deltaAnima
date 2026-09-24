@@ -23,7 +23,8 @@ Orchestrator::Orchestrator(clients::EmbeddingClient &embedder,
       emotion_engine_(emotion_engine) {}
 
 net::awaitable<schemas::FuliContextResponse>
-Orchestrator::HandleContextRequest(schemas::FuliContextRequest req) {
+Orchestrator::HandleContextRequest(schemas::FuliContextRequest reqest) 
+{
   // --- [2] Embedding ---------------------------------------------------
   // dense_vector is only ever set when something upstream already
   // computed an embedding. FuliHandler's docstring is explicit that this
@@ -33,10 +34,13 @@ Orchestrator::HandleContextRequest(schemas::FuliContextRequest req) {
   // conversation's curl example that bypassed TEI entirely) and for any
   // future caller that genuinely already has a vector on hand.
   std::vector<float> query_vector;
-  if (req.rag_policy.dense_vector.has_value()) {
-    query_vector = *req.rag_policy.dense_vector;
-  } else {
-    query_vector = co_await embedder_.Embed(req.user_input);
+  if (reqest.rag_policy.dense_vector.has_value()) 
+  {
+    query_vector = *reqest.rag_policy.dense_vector;
+  }
+  else
+  {
+    query_vector = co_await embedder_.Embed(reqest.user_input);
   }
 
   // --- [3] First-pass retrieval -----------------------------------------
@@ -46,7 +50,7 @@ Orchestrator::HandleContextRequest(schemas::FuliContextRequest req) {
   // yet — see schemas/rag_schemas.hpp for exactly which RAGQueryOrder
   // fields are parsed-but-currently-ignored.
   SearchResult raw = co_await util::AwaitFuture(
-      search_engine_.AsyncSearch(query_vector, req.rag_policy.top_k));
+      search_engine_.AsyncSearch(query_vector, reqest.rag_policy.top_k));
 
   // --- [4-A] Emotion branch -----------------------------------------------
   // ALWAYS feeds a neutral (v=0, a=0, d=0) stimulus into deltaEGO right

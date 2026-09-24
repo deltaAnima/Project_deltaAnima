@@ -874,8 +874,8 @@ bool Ayin::reload_config()
 
 Ayin::ProcessResult Ayin::Process(const structs::VAD_Point &input_stimulus)
 {
-  Roland::UpdateResult update = roland_->Update(input_stimulus);
-  auto [term, sim] = angela_->FindNearestTerm(update.current_state);
+  Roland::UpdateResult update = this->roland_->Update(input_stimulus);
+  auto [term, sim] = this->angela_->FindNearestTerm(update.current_state);
 
   ProcessResult result;
   result.current_state = update.current_state;

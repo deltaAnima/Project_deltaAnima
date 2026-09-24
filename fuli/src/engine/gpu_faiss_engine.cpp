@@ -14,7 +14,8 @@
 
 // See the big comment in gpu_faiss_engine.hpp for WHY everything here goes
 // through a single worker thread instead of being called directly.
-class GpuFaissEngine::Impl {
+class GpuFaissEngine::Impl 
+{
 public:
   explicit Impl(int dim)
       : dim_(dim), resources_(),
@@ -23,14 +24,16 @@ public:
         // config). L2 = squared Euclidean distance; combined with
         // normalized embeddings (see EmbeddingClient::Embed), this ranks
         // results the same way cosine similarity would.
-        index_(&resources_, dim, faiss::gpu::GpuIndexFlatConfig()) {
-    // Start the single GPU worker thread. It runs WorkerLoop() for the
-    // entire lifetime of this object, pulling tasks off `queue_` one at a
-    // time until told to stop in the destructor.
-    worker_ = std::thread([this] { WorkerLoop(); });
-  }
+        vector_index_(&resources_, dim, faiss::gpu::GpuIndexFlatConfig()) 
+        {
+          // Start the single GPU worker thread. It runs WorkerLoop() for the
+          // entire lifetime of this object, pulling tasks off `queue_` one at a
+          // time until told to stop in the destructor.
+          worker_ = std::thread([this] { WorkerLoop(); });
+        }
 
-  ~Impl() {
+  ~Impl() 
+  {
     // Tell the worker to exit once it's drained the queue, then wait for
     // it to actually finish (join) before this object's members — in
     // particular resources_/index_ — get destroyed. Destroying the Faiss
@@ -45,10 +48,12 @@ public:
   }
 
   void AddVectors(const std::vector<int64_t> &ids,
-                   const std::vector<float> &flat) {
+                   const std::vector<float> &flat) 
+                   {
     if (ids.empty())
       return;
-    if (flat.size() != ids.size() * static_cast<size_t>(dim_)) {
+    if (flat.size() != ids.size() * static_cast<size_t>(dim_))
+    {
       throw std::invalid_argument(
           "AddVectors: flat_vectors.size() != ids.size() * dim");
     }
@@ -70,7 +75,7 @@ public:
       // and Faiss's internal vector i always refer to the same vector as
       // long as we only ever append (never delete/reorder).
       id_map_.insert(id_map_.end(), ids.begin(), ids.end());
-      index_.add(static_cast<faiss::idx_t>(ids.size()), flat.data());
+      this->vector_index_.add(static_cast<faiss::idx_t>(ids.size()), flat.data());
       done.set_value();
     });
     fut.wait(); // blocks THIS (calling) thread — see header docs on why
@@ -98,14 +103,14 @@ public:
     Enqueue([this, query = std::move(query), top_k, promise]() mutable {
       try {
         SearchResult result;
-        if (index_.getNumVecs() == 0) {
+        if (this->vector_index_.getNumVecs() == 0) {
           // Nothing indexed yet — return an empty (not an error) result.
           promise->set_value(std::move(result));
           return;
         }
         // Faiss will assert/misbehave if asked for more neighbors than
         // exist, so clamp k to however many vectors are actually stored.
-        int k = std::min<int>(top_k, static_cast<int>(index_.getNumVecs()));
+        int k = std::min<int>(top_k, static_cast<int>(this->vector_index_.getNumVecs()));
         std::vector<float> distances(k);
         std::vector<faiss::idx_t> labels(k);
         // search(n_queries, query_data, k, out_distances, out_labels).
@@ -113,7 +118,7 @@ public:
         // — batching multiple queries into one search() call is possible
         // and more GPU-efficient, but not something the current
         // request-per-search pipeline needs yet.
-        index_.search(1, query.data(), k, distances.data(), labels.data());
+        this->vector_index_.search(1, query.data(), k, distances.data(), labels.data());
 
         for (int i = 0; i < k; ++i) {
           if (labels[i] < 0)
@@ -174,7 +179,7 @@ private:
   faiss::gpu::StandardGpuResources resources_; // owns the CUDA stream +
                                                 // scratch memory for this
                                                 // index
-  faiss::gpu::GpuIndexFlatL2 index_;
+  faiss::gpu::GpuIndexFlatL2 vector_index_;
   std::vector<int64_t> id_map_; // Faiss internal index position -> our
                                  // external memory id (see AddVectors)
 

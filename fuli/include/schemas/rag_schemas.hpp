@@ -99,6 +99,26 @@ inline void from_json(const json &j, MemoryQueryConfig &c) {
     c.reference_timestamp = j.at("reference_timestamp").get<std::string>();
 }
 
+// to_json's job (unlike from_json's) is just "produce something
+// round-trippable" — this exists so RedisDbClient can store the request
+// that led to a memory being written (see MemoryMetadata::Query in
+// redis_db_client.hpp), not to match any wire format Python expects back.
+// std::optional isn't handled automatically by the vendored json.hpp, so
+// every optional field below is written out by hand as either its value
+// or null, same defensive style as from_json above.
+inline void to_json(json &j, const MemoryQueryConfig &c) {
+  j = json{
+      {"session_id", c.session_id ? json(*c.session_id) : json(nullptr)},
+      {"user_id", c.user_id ? json(*c.user_id) : json(nullptr)},
+      {"enable_time_decay", c.enable_time_decay},
+      {"recency_weight", c.recency_weight},
+      {"importance_threshold", c.importance_threshold},
+      {"reference_timestamp", c.reference_timestamp
+                                   ? json(*c.reference_timestamp)
+                                   : json(nullptr)},
+  };
+}
+
 // --- KnowledgeQueryConfig -------------------------------------------------
 // Options for searching the knowledge base (docs/wiki) domain. Like
 // MemoryQueryConfig, this parses cleanly but isn't acted on yet — there is
@@ -128,6 +148,16 @@ inline void from_json(const json &j, KnowledgeQueryConfig &c) {
   c.max_hops = j.value("max_hops", 1);
 }
 
+inline void to_json(json &j, const KnowledgeQueryConfig &c) {
+  j = json{
+      {"collection_names", c.collection_names},
+      {"sparse_vector", c.sparse_vector ? json(*c.sparse_vector) : json(nullptr)},
+      {"hybrid_alpha", c.hybrid_alpha},
+      {"seed_entities", c.seed_entities ? json(*c.seed_entities) : json(nullptr)},
+      {"max_hops", c.max_hops},
+  };
+}
+
 // --- DualTrackFusionConfig -------------------------------------------------
 // How to combine memory-domain hits and knowledge-domain hits when
 // target_domain == BOTH. Only relevant once both domains are actually
@@ -142,6 +172,14 @@ inline void from_json(const json &j, DualTrackFusionConfig &c) {
   c.memory_weight = j.value("memory_weight", 0.4f);
   c.knowledge_weight = j.value("knowledge_weight", 0.6f);
   c.interleave_results = j.value("interleave_results", false);
+}
+
+inline void to_json(json &j, const DualTrackFusionConfig &c) {
+  j = json{
+      {"memory_weight", c.memory_weight},
+      {"knowledge_weight", c.knowledge_weight},
+      {"interleave_results", c.interleave_results},
+  };
 }
 
 // --- RAGQueryOrder (top-level) ---------------------------------------------
@@ -191,6 +229,24 @@ inline void from_json(const json &j, RAGQueryOrder &o) {
   o.granularity = j.value("granularity", Granularity::RAW_CHUNK);
   o.context_window_size = j.value("context_window_size", 1);
   o.enable_rerank = j.value("enable_rerank", false);
+}
+
+inline void to_json(json &j, const RAGQueryOrder &o) {
+  j = json{
+      {"target_domain", o.target_domain},
+      {"pipeline_level", o.pipeline_level},
+      {"dense_vector", o.dense_vector ? json(*o.dense_vector) : json(nullptr)},
+      {"top_k", o.top_k},
+      {"min_score_threshold", o.min_score_threshold},
+      {"memory_config",
+       o.memory_config ? json(*o.memory_config) : json(nullptr)},
+      {"knowledge_config",
+       o.knowledge_config ? json(*o.knowledge_config) : json(nullptr)},
+      {"fusion_config", o.fusion_config},
+      {"granularity", o.granularity},
+      {"context_window_size", o.context_window_size},
+      {"enable_rerank", o.enable_rerank},
+  };
 }
 
 } // namespace schemas

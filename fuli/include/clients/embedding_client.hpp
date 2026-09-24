@@ -20,7 +20,8 @@ namespace clients {
 // other coroutines (other in-flight HTTP requests, etc.) on the same
 // thread. This is the same cooperative-multitasking model asio-grpc uses
 // elsewhere in this project.
-class EmbeddingClient {
+class EmbeddingClient 
+{
 public:
   // ioc must outlive this object — we don't own it, we just borrow its
   // executor for every connection we open.

@@ -58,6 +58,22 @@ inline void from_json(const json &j, FuliContextRequest &r) {
   r.emotion_policy_raw = cfg.value("emotion_policy", json::object());
 }
 
+// Mirrors from_json's shape (nested "config" wrapper) so storing a
+// request (see MemoryMetadata::Query in redis_db_client.hpp) and later
+// parsing it back with from_json round-trips correctly.
+inline void to_json(json &j, const FuliContextRequest &r) {
+  j = json{
+      {"user_name", r.user_name},
+      {"user_input", r.user_input},
+      {"context", r.context ? json(*r.context) : json(nullptr)},
+      {"config",
+       {
+           {"rag_policy", r.rag_policy},
+           {"emotion_policy", r.emotion_policy_raw},
+       }},
+  };
+}
+
 // One retrieved memory/knowledge chunk. `score` is currently the raw
 // Faiss L2 distance (lower = more similar), NOT a normalized similarity
 // score and NOT re-ranked — see Orchestrator::HandleContextRequest.
