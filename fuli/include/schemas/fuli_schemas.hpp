@@ -77,9 +77,15 @@ inline void to_json(json &j, const FuliContextRequest &r) {
 // One retrieved memory/knowledge chunk. `score` is currently the raw
 // Faiss L2 distance (lower = more similar), NOT a normalized similarity
 // score and NOT re-ranked — see Orchestrator::HandleContextRequest.
+// user_input/model_response come from Redis (see
+// pipeline::MemoryRetriever + clients::MemoryMetadata::Memory::Content)
+// — without them a hit is just an opaque id+score, useless to whatever
+// reads this response.
 struct MemoryHit {
   int64_t id = 0;
   float score = 0.0f;
+  std::string user_input;
+  std::string model_response;
 };
 
 struct FuliContextResponse {
@@ -99,7 +105,10 @@ struct FuliContextResponse {
 inline void to_json(json &j, const FuliContextResponse &r) {
   j["hits"] = json::array();
   for (const auto &h : r.hits) {
-    j["hits"].push_back({{"id", h.id}, {"score", h.score}});
+    j["hits"].push_back({{"id", h.id},
+                          {"score", h.score},
+                          {"user_input", h.user_input},
+                          {"model_response", h.model_response}});
   }
 
   // allow_exceptions=false makes json::parse return a "discarded" value

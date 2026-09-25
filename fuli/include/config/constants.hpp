@@ -20,6 +20,12 @@ inline constexpr int kEmbeddingDim = 1024;
 inline constexpr const char *kEmbeddingHost = "127.0.0.1";
 inline constexpr const char *kEmbeddingPort = "8080";
 
+// Where RedisDbClient connects for memory metadata. Same caveat as
+// kEmbeddingHost: if orchestrator_server doesn't run on the same host as
+// this Redis instance, change this to that host's real address.
+inline constexpr const char *kRedisHost = "127.0.0.1";
+inline constexpr const char *kRedisPort = "8080";
+
 // The port THIS server (orchestrator_server) listens on for the
 // /character/context endpoint that FuliHandler (the Python side) calls.
 inline constexpr unsigned short kListenPort = 8080;

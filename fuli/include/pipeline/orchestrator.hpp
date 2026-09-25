@@ -4,7 +4,7 @@
 
 #include "clients/embedding_client.hpp"
 #include "deltaEGO/deltaEGO.hpp"
-#include "engine/vector_search_engine.hpp"
+#include "pipeline/memory_retriever.hpp"
 #include "schemas/fuli_schemas.hpp"
 
 namespace pipeline {
@@ -18,7 +18,8 @@ namespace pipeline {
 //   [1] (done in main.cpp / http_server.cpp) parse the incoming JSON
 //   [2] embed user_input via TEI, unless the caller already supplied
 //       dense_vector
-//   [3] Faiss GPU search for the top_k nearest memory vectors
+//   [3] MemoryRetriever: Faiss search + Redis metadata join, filtered by
+//       memory_config (session_id, importance_threshold)
 //   [4-A] emotion: currently a NEUTRAL (0,0,0) stimulus — the real
 //         text -> VAD step (calling the OpenJEV inference server) is
 //         deliberately deferred, see HandleContextRequest's comments
@@ -41,7 +42,7 @@ public:
   // (and for as long as any in-flight request coroutine holding a
   // reference to it is still running).
   Orchestrator(clients::EmbeddingClient &embedder,
-               IVectorSearchEngine &search_engine,
+               MemoryRetriever &memory_retriever,
                deltaEGO::deltaEGO &emotion_engine);
 
   // The single entry point http_server.cpp's route handler calls. Takes
@@ -52,7 +53,7 @@ public:
 
 private:
   clients::EmbeddingClient &embedder_;
-  IVectorSearchEngine &search_engine_;
+  MemoryRetriever &memory_retriever_;
   deltaEGO::deltaEGO &emotion_engine_;
 };
 

@@ -1,25 +1,13 @@
 #include "pipeline/orchestrator.hpp"
 
-#include "util/future_bridge.hpp"
-
 namespace pipeline {
 
 namespace net = boost::asio;
 
-// IVectorSearchEngine::AsyncSearch() (see engine/vector_search_engine.hpp)
-// returns a std::future<SearchResult>, not a boost::asio::awaitable —
-// util::AwaitFuture (include/util/future_bridge.hpp) is what turns that
-// into something we can co_await without blocking the io_context thread.
-// See that header for the full rationale; this used to be a private
-// helper duplicated here until HealthChecker needed the exact same
-// bridge for a different std::future<T>, at which point it made sense to
-// share one implementation instead of copy-pasting the polling loop
-// again.
-
 Orchestrator::Orchestrator(clients::EmbeddingClient &embedder,
-                            IVectorSearchEngine &search_engine,
+                            MemoryRetriever &memory_retriever,
                             deltaEGO::deltaEGO &emotion_engine)
-    : embedder_(embedder), search_engine_(search_engine),
+    : embedder_(embedder), memory_retriever_(memory_retriever),
       emotion_engine_(emotion_engine) {}
 
 net::awaitable<schemas::FuliContextResponse>
@@ -44,13 +32,16 @@ Orchestrator::HandleContextRequest(schemas::FuliContextRequest reqest)
   }
 
   // --- [3] First-pass retrieval -----------------------------------------
-  // MVP scope: memory-domain dense search only. No knowledge-base search,
-  // no hybrid (sparse+dense) fusion, no graph traversal, and no Redis
-  // metadata join (session/user scoping, importance/time-decay filtering)
-  // yet — see schemas/rag_schemas.hpp for exactly which RAGQueryOrder
-  // fields are parsed-but-currently-ignored.
-  SearchResult raw = co_await util::AwaitFuture(
-      search_engine_.AsyncSearch(query_vector, reqest.rag_policy.top_k));
+  // MemoryRetriever runs the Faiss search and joins each candidate
+  // against Redis metadata, applying session_id/importance_threshold
+  // filtering from memory_config. Still MVP scope beyond that: no
+  // knowledge-base search, no hybrid (sparse+dense) fusion, no graph
+  // traversal, no time-decay re-ranking yet (enable_time_decay/
+  // recency_weight are parsed but not applied) — see
+  // schemas/rag_schemas.hpp for exactly which RAGQueryOrder fields are
+  // still parsed-but-currently-ignored.
+  std::vector<pipeline::RetrievedMemory> retrieved = co_await memory_retriever_.Retrieve(
+      query_vector, reqest.rag_policy.top_k, reqest.rag_policy.memory_config);
 
   // --- [4-A] Emotion branch -----------------------------------------------
   // ALWAYS feeds a neutral (v=0, a=0, d=0) stimulus into deltaEGO right
@@ -65,13 +56,18 @@ Orchestrator::HandleContextRequest(schemas::FuliContextRequest reqest)
   // --- [4-B] Rerank/refine branch ------------------------------------------
   // Deferred: enable_rerank (TEI cross-encoder call), fusion_config
   // (memory+knowledge score blending), and granularity/context_window_size
-  // (chunk expansion) are all no-ops here — raw Faiss hits pass straight
-  // through unchanged. min_score_threshold is parsed but not enforced yet
-  // either.
+  // (chunk expansion) are all no-ops here — MemoryRetriever's already-
+  // filtered hits pass straight through unchanged. min_score_threshold is
+  // parsed but not enforced yet either.
   schemas::FuliContextResponse resp;
-  resp.hits.reserve(raw.ids.size());
-  for (size_t i = 0; i < raw.ids.size(); ++i) {
-    resp.hits.push_back({raw.ids[i], raw.distances[i]});
+  resp.hits.reserve(retrieved.size());
+  for (const auto &mem : retrieved) {
+    schemas::MemoryHit hit;
+    hit.id = mem.id;
+    hit.score = mem.distance;
+    hit.user_input = mem.metadata.memory.content.user_input;
+    hit.model_response = mem.metadata.memory.content.model_response;
+    resp.hits.push_back(std::move(hit));
   }
   resp.emotion_json = std::move(emotion_json);
 

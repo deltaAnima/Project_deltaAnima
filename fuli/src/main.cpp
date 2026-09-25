@@ -17,11 +17,13 @@
 
 #include "Third_Party/json.hpp"
 #include "clients/embedding_client.hpp"
+#include "clients/redis_db_client.hpp"
 #include "config/constants.hpp"
 #include "deltaEGO/deltaEGO.hpp"
 #include "engine/gpu_faiss_engine.hpp"
 #include "health/health_checker.hpp"
 #include "http/http_server.hpp"
+#include "pipeline/memory_retriever.hpp"
 #include "pipeline/orchestrator.hpp"
 #include "schemas/fuli_schemas.hpp"
 #include "util/future_bridge.hpp"
@@ -114,13 +116,24 @@ int main()
   clients::EmbeddingClient embedder(ioc, config::kEmbeddingHost,
                                      config::kEmbeddingPort);
 
-  // Orchestrator holds references to all three of the above — none of
-  // them may be destroyed before Orchestrator (and, transitively, before
-  // every request coroutine referencing it) is done. Since all four
-  // objects are local variables in main() that live until ioc.run()
-  // returns, and ioc.run() is the last thing this function does, that
-  // invariant holds automatically here.
-  pipeline::Orchestrator orchestrator(embedder, search_engine, emotion_engine);
+  // RedisDbClient's background connection (see Run()) needs to be
+  // started before anything calls Get/SetMemoryMetadata on it.
+  clients::RedisDbClient redis_client(ioc, config::kRedisHost,
+                                       config::kRedisPort);
+  redis_client.Run();
+
+  // MemoryRetriever is the Faiss+Redis join layer — it's what
+  // Orchestrator actually talks to for retrieval now, not
+  // search_engine/redis_client directly.
+  pipeline::MemoryRetriever memory_retriever(search_engine, redis_client);
+
+  // Orchestrator holds references to all of the above — none of them
+  // may be destroyed before Orchestrator (and, transitively, before
+  // every request coroutine referencing it) is done. Since every one of
+  // these objects is a local variable in main() that lives until
+  // ioc.run() returns, and ioc.run() is the last thing this function
+  // does, that invariant holds automatically here.
+  pipeline::Orchestrator orchestrator(embedder, memory_retriever, emotion_engine);
 
   // Same reference-holding, same lifetime rule as Orchestrator above:
   // health_checker just borrows embedder, doesn't own it.
