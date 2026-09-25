@@ -4,12 +4,13 @@
 //     -> GpuFaissEngine (loads a saved index if one exists, else seeds
 //        fake data — see LoadFromDisk/SeedTestVectors below)
 //     -> EmbeddingClient (talks to TEI bge-m3)
+//     -> OpenJevClient (talks to OpenJev NLI classify — smoke-tested only,
+//        not yet wired into Orchestrator)
 //     -> Orchestrator (the actual /character/context pipeline logic)
 //     -> HttpServer (generic HTTP plumbing, routes into Orchestrator)
 // then hands control to io_context.run(), which drives every coroutine
-// (HTTP sessions, embedding calls, the Faiss search bridge, the autosave
-// loop, ...) from here on, until a SIGINT/SIGTERM triggers a save +
-// graceful shutdown.
+// (HTTP sessions, embedding calls, the Faiss search bridge, the OpenJev
+// smoke test, ...) from here on.
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/detached.hpp>
 #include <boost/asio/io_context.hpp>
@@ -25,7 +26,7 @@
 
 #include "Third_Party/json.hpp"
 #include "clients/embedding_client.hpp"
-#include "clients/redis_db_client.hpp"
+#include "clients/openjev_client.hpp"
 #include "config/constants.hpp"
 #include "deltaEGO/deltaEGO.hpp"
 #include "engine/gpu_faiss_engine.hpp"
@@ -83,37 +84,31 @@ void SeedTestVectors(GpuFaissEngine &engine, int dim, int count)
             << " random test vectors (dim=" << dim << ")" << std::endl;
 }
 
-// Safety net for anything short of a graceful shutdown (kill -9, crash,
-// power loss) — the SIGINT/SIGTERM handler in main() saves
-// unconditionally on a clean exit, but a hard kill never gets to run
-// that. Loops for the whole server lifetime; only exits when the
-// coroutine's own steady_timer wait gets cancelled, which happens when
-// ioc.stop() is called and the process is about to exit anyway.
-boost::asio::awaitable<void> AutosaveLoop(GpuFaissEngine &engine)
+// One-shot smoke test for OpenJevClient, spawned (not awaited) from
+// main() before ioc.run(). Fires a single known premise/hypothesis pair
+// at OpenJev and logs the resulting scores, purely to prove the
+// HTTP -> OpenJev -> response chain works end to end before anything in
+// Orchestrator depends on it. DELETE this call once OpenJev is actually
+// wired into the request pipeline (or keep it behind a flag) — it's a
+// one-off diagnostic, not a health check.
+boost::asio::awaitable<void> TestOpenJev(clients::OpenJevClient &openjev)
 {
-  auto executor = co_await boost::asio::this_coro::executor;
-  boost::asio::steady_timer timer(executor);
-
-  for (;;)
+  try
   {
-    timer.expires_after(std::chrono::seconds(config::kAutosaveIntervalSeconds));
-    co_await timer.async_wait(boost::asio::use_awaitable);
+    static constexpr char kPremise[] = "The cat is sleeping on the couch.";
+    static constexpr char kHypothesis[] = "The cat is awake.";
 
-    try
-    {
-      // AsyncSaveToDisk (not the blocking SaveToDisk) — this coroutine
-      // runs on the io_context thread alongside live request handling,
-      // so blocking here would stall every in-flight request for
-      // however long the save takes, same reasoning as everywhere else
-      // a std::future gets bridged with util::AwaitFuture instead of
-      // .get()/.wait() directly.
-      co_await util::AwaitFuture(engine.AsyncSaveToDisk(config::kFaissIndexPath));
-      std::cout << "[Faiss] autosaved " << engine.Size() << " vectors" << std::endl;
-    }
-    catch (const std::exception &e)
-    {
-      std::cerr << "[Faiss] autosave failed: " << e.what() << std::endl;
-    }
+    clients::OpenJevScores scores =
+        co_await openjev.Classify(kPremise, kHypothesis);
+
+    std::cout << "[OpenJev] test classify ok — "
+              << "contradiction=" << scores.contradiction << " "
+              << "entailment=" << scores.entailment << " "
+              << "neutral=" << scores.neutral << std::endl;
+  }
+  catch (const std::exception &e)
+  {
+    std::cerr << "[OpenJev] test classify failed: " << e.what() << std::endl;
   }
 }
 
@@ -176,24 +171,19 @@ int main()
   clients::EmbeddingClient embedder(ioc, config::kEmbeddingHost,
                                      config::kEmbeddingPort);
 
-  // RedisDbClient's background connection (see Run()) needs to be
-  // started before anything calls Get/SetMemoryMetadata on it.
-  clients::RedisDbClient redis_client(ioc, config::kRedisHost,
-                                       config::kRedisPort);
-  redis_client.Run();
+  // Same story as EmbeddingClient above: no connection opens yet, just
+  // remembers where OpenJev lives. Not referenced by Orchestrator yet —
+  // see TestOpenJev() for the one-off smoke test proving it's reachable.
+  clients::OpenJevClient openjev(ioc, config::kOpenJevHost,
+                                  config::kOpenJevPort);
 
-  // MemoryRetriever is the Faiss+Redis join layer — it's what
-  // Orchestrator actually talks to for retrieval now, not
-  // search_engine/redis_client directly.
-  pipeline::MemoryRetriever memory_retriever(search_engine, redis_client);
-
-  // Orchestrator holds references to all of the above — none of them
-  // may be destroyed before Orchestrator (and, transitively, before
-  // every request coroutine referencing it) is done. Since every one of
-  // these objects is a local variable in main() that lives until
-  // ioc.run() returns, and ioc.run() is the last thing this function
-  // does, that invariant holds automatically here.
-  pipeline::Orchestrator orchestrator(embedder, memory_retriever, emotion_engine);
+  // Orchestrator holds references to all three of the above — none of
+  // them may be destroyed before Orchestrator (and, transitively, before
+  // every request coroutine referencing it) is done. Since all four
+  // objects are local variables in main() that live until ioc.run()
+  // returns, and ioc.run() is the last thing this function does, that
+  // invariant holds automatically here.
+  pipeline::Orchestrator orchestrator(embedder, search_engine, emotion_engine);
 
   // Same reference-holding, same lifetime rule as Orchestrator above:
   // health_checker just borrows embedder, doesn't own it.
@@ -289,6 +279,13 @@ int main()
   // block. The actual accepting/serving only happens once we call
   // ioc.run() below.
   server.Run();
+
+  // Fire the OpenJev smoke test too — co_spawn schedules it, it doesn't
+  // run until ioc.run() starts driving the event loop below. detached
+  // means main() doesn't wait on it or see its result directly; success
+  // or failure is reported via the [OpenJev] log lines in TestOpenJev().
+  net::co_spawn(ioc, TestOpenJev(openjev), net::detached);
+
   std::cout << "[Fuli] orchestrator_server up — POST /character/context on :"
             << config::kListenPort << std::endl;
 
