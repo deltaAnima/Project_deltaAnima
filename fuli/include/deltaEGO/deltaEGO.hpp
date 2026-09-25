@@ -14,6 +14,20 @@
 #include <memory>
 #include <string>
 
+// io_context is still only forward-declared — a reference parameter
+// doesn't need the complete type. boost::asio::awaitable<T>, though, IS
+// included for real below: sephirothic_tree returns one, and a return
+// type (unlike a reference parameter) needs its complete definition for
+// the compiler to know its size/layout. That's the actual cost of
+// sephirothic_tree's coroutine-based public API — accepted here as
+// unavoidable, not an oversight.
+namespace boost {
+namespace asio {
+class io_context;
+} // namespace asio
+} // namespace boost
+#include <boost/asio/awaitable.hpp>
+
 namespace deltaEGO {
 
   namespace structs
@@ -159,14 +173,37 @@ namespace deltaEGO {
   public:
     // config_path: path to the YAML file with OCEAN/physics weights.
     // def_V/def_A/def_D/def_radius: default (resting) VAD state.
-    deltaEGO(const std::string &config_path, float def_V, float def_A,
-            float def_D, float def_radius);
+    // ioc: THE server's single io_context (see main.cpp) — forwarded to
+    // Carmen, which needs it for its network clients (OpenJEV, the 5090
+    // fallback). Not owned; must outlive this deltaEGO instance.
+    // host_jev/port_jev/host_5090/port_5090: where those two backends
+    // live — see config::kLlama5090Host/Port for the 5090 side.
+    deltaEGO(boost::asio::io_context &ioc,
+              const std::string &config_path,
+              float def_V, float def_A, float def_D, float def_radius,
+              std::string host_jev, std::string port_jev,
+              std::string host_5090, std::string port_5090);
     ~deltaEGO();
 
     deltaEGO(const deltaEGO &) = delete;
     deltaEGO &operator=(const deltaEGO &) = delete;
     deltaEGO(deltaEGO &&) noexcept;
     deltaEGO &operator=(deltaEGO &&) noexcept;
+
+    // Same text -> VAD -> emotion-analysis pipeline as process_stimulus,
+    // but starting from raw text instead of an already-known (v,a,d) —
+    // calls Carmen::whisper_from_Carmen first to derive the stimulus
+    // (OpenJEV primary, the 5090 machine as fallback), then feeds that
+    // into the same physics/search path process_stimulus uses.
+    // Returns an awaitable, not a plain std::string, because
+    // whisper_from_Carmen is itself a coroutine (it calls out over the
+    // network) — co_await only works inside another coroutine, so this
+    // one has to be one too. Callers must co_await this, the same way
+    // Orchestrator co_awaits EmbeddingClient::Embed.
+    boost::asio::awaitable<std::string>
+    sephirothic_tree(std::string context, bool use_jev,
+                      bool fallback_to_5090, bool use_5090,
+                      bool fallback_to_jev);
 
     // Loads the VAD term database (see VAD_DB/VAD.json) used for nearest
     // neighbor emotion-term lookup. Returns false on parse/IO failure.

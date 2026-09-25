@@ -139,8 +139,10 @@ int main()
   // character's resting emotional state before any stimulus is applied.
   std::cout << "[Init] loading deltaEGO config: " << config::kDeltaEgoConfigPath
             << std::endl;
-  deltaEGO::deltaEGO emotion_engine(config::kDeltaEgoConfigPath, 0.0f, 0.0f,
-                                     0.0f, 1.0f);
+  deltaEGO::deltaEGO emotion_engine(ioc, config::kDeltaEgoConfigPath, 0.0f, 0.0f,
+                                     0.0f, 1.0f, config::kOpenJevHost,
+                                     config::kOpenJevPort, config::kLlama5090Host,
+                                     config::kLlama5090Port);
   if (!emotion_engine.load_vad_db(config::kVadDbPath)) 
   {
     std::cerr << "[Init] warning: failed to load VAD DB from "

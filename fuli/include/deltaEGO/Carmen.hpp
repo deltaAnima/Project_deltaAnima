@@ -1,5 +1,7 @@
 #pragma once
-
+#include <boost/asio/io_context.hpp>
+#include "clients/llama_5090_client.hpp"
+#include "deltaEGO/deltaEGO.hpp"
 // Internal header — NOT part of deltaEGO's public API (see
 // deltaEGO.hpp's own doc comment). Shared between deltaEGO.cpp (which
 // owns a Carmen::Carmen via unique_ptr) and Carmen.cpp (which implements
@@ -14,9 +16,46 @@ namespace Carmen {
 // weighted-average (v, a, d) — pre-processing = building those pairs,
 // post-processing = the weighted average). See Carmen.cpp: NOT
 // implemented yet, this is currently just a scaffold.
-class Carmen {
+class Carmen
+{
 public:
-  Carmen();
+  // ioc is NOT owned — it must be the SAME io_context main.cpp created
+  // and calls ioc.run() on. Every network client in this project
+  // (EmbeddingClient, RedisDbClient, Llama5090Client) takes
+  // io_context& the same way, for the same reason: there is exactly one
+  // event loop for the whole server, and a coroutine spawned onto any
+  // OTHER io_context (e.g. one Carmen constructed for itself) would
+  // never actually run, because nothing calls .run() on it — co_await
+  // inside temp/Gebura's calls would hang forever, not fail loudly.
+  Carmen(boost::asio::io_context &ioc,
+        std::string host_jev, std::string port_jev,
+        std::string host_5090, std::string port_5090)
+      : ioc_(ioc), temp_jev(ioc_, host_jev, port_jev),
+        Gebura_5090(ioc_, host_5090, port_5090) {};
+
+  ~Carmen() = default;
+
+  // Implemented in Carmen.cpp, not here — see that file. (Bare
+  // `structs::`, not `deltaEGO::structs::`: this class already lives
+  // inside namespace deltaEGO::Carmen, and the qualified form actually
+  // fails to compile here — `deltaEGO::` resolves to the CLASS
+  // deltaEGO::deltaEGO, same name as the enclosing namespace, not the
+  // namespace itself. Same reason Ayin.hpp/Ayin.cpp write bare
+  // `structs::`/`func::` throughout.)
+  // net::awaitable<...>, not a plain structs::VAD_Point — Gebura/temp's
+  // EstimateVad() are themselves coroutines (see llama_5090_client.hpp),
+  // so anything that calls them (via co_await) has to be a coroutine
+  // too. Callers co_await this the same way Orchestrator co_awaits
+  // EmbeddingClient::Embed.
+  boost::asio::awaitable<structs::VAD_Point>
+  whisper_from_Carmen(std::string context, bool use_jev,
+                      bool fallback_to_5090, bool use_5090,
+                      bool fallback_to_jev);
+
+private:
+  boost::asio::io_context &ioc_; // borrowed, not owned — see ctor comment
+  clients::Llama5090Client temp_jev;   // temporary VAD estimator
+  clients::Llama5090Client Gebura_5090; // fallback VAD estimator for when OpenJEV is unavailable
 };
 
 } // namespace Carmen
