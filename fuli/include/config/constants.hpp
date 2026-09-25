@@ -26,6 +26,12 @@ inline constexpr const char *kEmbeddingPort = "8080";
 inline constexpr const char *kRedisHost = "127.0.0.1";
 inline constexpr const char *kRedisPort = "8080";
 
+// The 5090 machine's llama.cpp server — Llama5090Client's fallback VAD
+// estimator (see emotion_policy.use_5090/fallback_to_5090). Different
+// physical host from everything else here, unlike kRedisHost.
+inline constexpr const char *kLlama5090Host = "127.0.0.1";
+inline constexpr const char *kLlama5090Port = "8080";
+
 // The port THIS server (orchestrator_server) listens on for the
 // /character/context endpoint that FuliHandler (the Python side) calls.
 inline constexpr unsigned short kListenPort = 8080;
