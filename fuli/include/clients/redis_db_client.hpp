@@ -118,6 +118,13 @@ public:
   boost::asio::awaitable<void> SetMemoryMetadata(int64_t faiss_id,
                                                   const MemoryMetadata &meta);
 
+  // INCR on a dedicated counter key — atomically allocates and returns a
+  // fresh, globally unique memory id. This is what a new memory gets
+  // stored under, both in Faiss (see MemoryRetriever::Store) and here in
+  // Redis, so Faiss's id_map_ and Redis's mem:{id} keys never collide
+  // even across restarts (the counter lives in Redis, not in-process).
+  boost::asio::awaitable<int64_t> NextId();
+
   // Blocking (same pattern as EmbeddingClient::HealthCheck, so
   // HealthChecker::CheckAll can std::async both the same way) — a real
   // PING through a throwaway connection, not just a TCP connect, so it

@@ -177,7 +177,7 @@ RedisDbClient::GetMemoryMetadata(int64_t faiss_id)
 }
 
 net::awaitable<void>
-RedisDbClient::SetMemoryMetadata(int64_t faiss_id, const MemoryMetadata &meta) 
+RedisDbClient::SetMemoryMetadata(int64_t faiss_id, const MemoryMetadata &meta)
 {
   redis::request req;
   req.push_range("HSET", MemKey(faiss_id), MetadataToFields(meta));
@@ -185,7 +185,18 @@ RedisDbClient::SetMemoryMetadata(int64_t faiss_id, const MemoryMetadata &meta)
   co_await conn_->async_exec(req, redis::ignore, net::use_awaitable);
 }
 
-nlohmann::json RedisDbClient::HealthCheck() const 
+net::awaitable<int64_t> RedisDbClient::NextId()
+{
+  redis::request req;
+  req.push("INCR", "next_mem_id");
+
+  redis::response<int64_t> resp;
+  co_await conn_->async_exec(req, resp, net::use_awaitable);
+
+  co_return std::get<0>(resp).value();
+}
+
+nlohmann::json RedisDbClient::HealthCheck() const
 {
   if (host_.empty() || port_.empty()) 
   {

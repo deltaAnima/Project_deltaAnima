@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <future>
 #include <memory>
+#include <string>
 #include <vector>
 
 #include "engine/vector_search_engine.hpp"
@@ -47,13 +48,39 @@ public:
   // comment on id_map_ in the .cpp) — we track ids ourselves, positionally,
   // in insertion order.
   //
-  // This call BLOCKS the calling thread until the add completes (it
-  // internally waits on a std::promise). That's intentional: it's only
-  // meant to be used for startup-time seeding/ingestion, never from the
-  // hot request path, where you'd want AsyncSearch's non-blocking
-  // std::future instead.
+  // This call BLOCKS the calling thread until the add completes (it's
+  // implemented as AsyncAddVectors(...).get()). That's fine for
+  // startup-time bulk seeding (see main.cpp's SeedTestVectors) but NOT
+  // for the request path — use AsyncAddVectors there instead, the same
+  // way AsyncSearch is used instead of a blocking search.
   void AddVectors(const std::vector<int64_t> &ids,
                    const std::vector<float> &flat_vectors);
+
+  // Non-blocking version — see IVectorSearchEngine::AsyncAddVectors.
+  std::future<void> AsyncAddVectors(const std::vector<int64_t> &ids,
+                                     const std::vector<float> &flat_vectors) override;
+
+  // Persists the index to disk: writes "{path}.faiss" (a CPU copy of the
+  // index, via faiss::write_index — Faiss's GPU indices don't serialize
+  // directly) and "{path}.ids" (our external id_map_, which Faiss's own
+  // serialization has no concept of — see the id_map_ comment in the
+  // .cpp). Blocking — implemented as AsyncSaveToDisk(path).get(). Fine
+  // for startup/shutdown; use AsyncSaveToDisk instead for a periodic
+  // autosave loop that runs alongside live request handling. Throws on
+  // I/O or Faiss failure.
+  void SaveToDisk(const std::string &path);
+
+  // Non-blocking version of SaveToDisk — see IVectorSearchEngine::
+  // AsyncAddVectors for why this shape (future instead of blocking)
+  // matters once something calls it from inside the io_context.
+  std::future<void> AsyncSaveToDisk(const std::string &path);
+
+  // Loads an index previously written by SaveToDisk, REPLACING whatever
+  // is currently in this engine — any vectors added before this call are
+  // discarded. Returns false (engine left untouched) if either file is
+  // missing/corrupt or the saved index's dimension doesn't match dim_
+  // this engine was constructed with. Also blocking.
+  bool LoadFromDisk(const std::string &path);
 
   // Number of vectors currently stored.
   size_t Size() const;

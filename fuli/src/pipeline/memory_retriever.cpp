@@ -70,4 +70,21 @@ net::awaitable<std::vector<RetrievedMemory>> MemoryRetriever::Retrieve(
   co_return results;
 }
 
+net::awaitable<int64_t> MemoryRetriever::Store(const std::vector<float> &vector,
+                                                clients::MemoryMetadata metadata) {
+  int64_t id = co_await redis_.NextId();
+
+  // AsyncAddVectors (not the blocking AddVectors) — Store() runs on the
+  // request path, potentially concurrently with other requests, so it
+  // must not block the io_context thread the way AddVectors's blocking
+  // .get() would.
+  co_await util::AwaitFuture(
+      search_engine_.AsyncAddVectors({id}, vector));
+
+  metadata.metadata.faiss_id = id;
+  co_await redis_.SetMemoryMetadata(id, metadata);
+
+  co_return id;
+}
+
 } // namespace pipeline

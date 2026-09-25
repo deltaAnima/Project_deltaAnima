@@ -38,4 +38,15 @@ inline constexpr const char *kDeltaEgoConfigPath =
     "config/deltaEGO_default.yaml";
 inline constexpr const char *kVadDbPath = "include/VAD_DB/VAD.json";
 
+// Where GpuFaissEngine's index gets saved/loaded (see
+// GpuFaissEngine::SaveToDisk — this becomes "{kFaissIndexPath}.faiss" and
+// "{kFaissIndexPath}.ids"). The containing directory is created at
+// startup if it doesn't exist yet.
+inline constexpr const char *kFaissIndexPath = "data/memory_index";
+
+// How often main()'s autosave loop calls AsyncSaveToDisk while the
+// server is running — a safety net for anything short of a graceful
+// shutdown (which saves unconditionally via the SIGINT/SIGTERM handler).
+inline constexpr int kAutosaveIntervalSeconds = 300; // 5 minutes
+
 } // namespace config

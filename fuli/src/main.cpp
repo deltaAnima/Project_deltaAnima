@@ -1,17 +1,25 @@
 // Entry point: wires every piece built so far into one running server.
 //   config (constants.hpp)
 //     -> deltaEGO (emotion engine, loads its own YAML + VAD term DB)
-//     -> GpuFaissEngine (seeded with fake data — no real ingestion yet)
+//     -> GpuFaissEngine (loads a saved index if one exists, else seeds
+//        fake data — see LoadFromDisk/SeedTestVectors below)
 //     -> EmbeddingClient (talks to TEI bge-m3)
 //     -> Orchestrator (the actual /character/context pipeline logic)
 //     -> HttpServer (generic HTTP plumbing, routes into Orchestrator)
 // then hands control to io_context.run(), which drives every coroutine
-// (HTTP sessions, embedding calls, the Faiss search bridge, ...) from
-// here on.
+// (HTTP sessions, embedding calls, the Faiss search bridge, the autosave
+// loop, ...) from here on, until a SIGINT/SIGTERM triggers a save +
+// graceful shutdown.
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/detached.hpp>
 #include <boost/asio/io_context.hpp>
+#include <boost/asio/signal_set.hpp>
+#include <boost/asio/steady_timer.hpp>
+#include <boost/asio/this_coro.hpp>
+#include <boost/asio/use_awaitable.hpp>
 #include <cmath>
+#include <csignal>
+#include <filesystem>
 #include <iostream>
 #include <random>
 
@@ -75,6 +83,40 @@ void SeedTestVectors(GpuFaissEngine &engine, int dim, int count)
             << " random test vectors (dim=" << dim << ")" << std::endl;
 }
 
+// Safety net for anything short of a graceful shutdown (kill -9, crash,
+// power loss) — the SIGINT/SIGTERM handler in main() saves
+// unconditionally on a clean exit, but a hard kill never gets to run
+// that. Loops for the whole server lifetime; only exits when the
+// coroutine's own steady_timer wait gets cancelled, which happens when
+// ioc.stop() is called and the process is about to exit anyway.
+boost::asio::awaitable<void> AutosaveLoop(GpuFaissEngine &engine)
+{
+  auto executor = co_await boost::asio::this_coro::executor;
+  boost::asio::steady_timer timer(executor);
+
+  for (;;)
+  {
+    timer.expires_after(std::chrono::seconds(config::kAutosaveIntervalSeconds));
+    co_await timer.async_wait(boost::asio::use_awaitable);
+
+    try
+    {
+      // AsyncSaveToDisk (not the blocking SaveToDisk) — this coroutine
+      // runs on the io_context thread alongside live request handling,
+      // so blocking here would stall every in-flight request for
+      // however long the save takes, same reasoning as everywhere else
+      // a std::future gets bridged with util::AwaitFuture instead of
+      // .get()/.wait() directly.
+      co_await util::AwaitFuture(engine.AsyncSaveToDisk(config::kFaissIndexPath));
+      std::cout << "[Faiss] autosaved " << engine.Size() << " vectors" << std::endl;
+    }
+    catch (const std::exception &e)
+    {
+      std::cerr << "[Faiss] autosave failed: " << e.what() << std::endl;
+    }
+  }
+}
+
 } // namespace
 
 int main()
@@ -106,9 +148,25 @@ int main()
   }
 
   // GpuFaissEngine spins up its own dedicated worker thread internally
-  // (see gpu_faiss_engine.cpp) — nothing else to do here except seed it.
+  // (see gpu_faiss_engine.cpp). Directory must exist before SaveToDisk
+  // ever tries to write into it (std::ofstream doesn't create missing
+  // parent directories) — create_directories is a no-op if it's already
+  // there, so this is safe to run on every startup.
+  std::filesystem::create_directories(
+      std::filesystem::path(config::kFaissIndexPath).parent_path());
+
   GpuFaissEngine search_engine(config::kEmbeddingDim);
-  SeedTestVectors(search_engine, config::kEmbeddingDim, /*count=*/200);
+  if (search_engine.LoadFromDisk(config::kFaissIndexPath))
+  {
+    std::cout << "[Faiss] loaded " << search_engine.Size()
+              << " vectors from " << config::kFaissIndexPath << std::endl;
+  }
+  else
+  {
+    std::cout << "[Faiss] no saved index at " << config::kFaissIndexPath
+              << " — seeding random test vectors instead" << std::endl;
+    SeedTestVectors(search_engine, config::kEmbeddingDim, /*count=*/200);
+  }
 
   // EmbeddingClient doesn't open any connection yet — it just remembers
   // where TEI lives; the actual TCP connection happens per-call inside
@@ -194,6 +252,37 @@ int main()
       });
 
 
+  // Same "schedule, don't block" pattern as server.Run() below.
+  net::co_spawn(ioc, AutosaveLoop(search_engine), net::detached);
+
+  // Graceful shutdown: Ctrl+C (SIGINT) or `kill` (SIGTERM, the default
+  // signal `kill` sends and what most process managers use to ask for a
+  // clean stop) saves the index unconditionally, then stops the
+  // io_context so ioc.run() below returns and main() can exit normally.
+  // A hard kill -9 (or a crash) skips this entirely — that's what
+  // AutosaveLoop's periodic save is the safety net for.
+  net::signal_set signals(ioc, SIGINT, SIGTERM);
+  signals.async_wait([&search_engine, &ioc](const boost::system::error_code &ec,
+                                              int signal_number) {
+    if (ec)
+      return; // wait itself was cancelled — nothing to do
+    std::cout << "[Fuli] received signal " << signal_number
+              << ", saving index before shutdown..." << std::endl;
+    try
+    {
+      search_engine.SaveToDisk(config::kFaissIndexPath); // blocking is fine
+                                                            // here — we're
+                                                            // exiting anyway
+      std::cout << "[Faiss] saved " << search_engine.Size()
+                << " vectors to " << config::kFaissIndexPath << std::endl;
+    }
+    catch (const std::exception &e)
+    {
+      std::cerr << "[Faiss] shutdown save failed: " << e.what() << std::endl;
+    }
+    ioc.stop();
+  });
+
   // Run() only SCHEDULES the accept loop (via co_spawn) — it does not
   // block. The actual accepting/serving only happens once we call
   // ioc.run() below.
@@ -201,10 +290,9 @@ int main()
   std::cout << "[Fuli] orchestrator_server up — POST /character/context on :"
             << config::kListenPort << std::endl;
 
-  // Blocks here, running the event loop, until there's no more work to do
-  // (which in practice means "forever", since Listen() loops
-  // indefinitely) or an unhandled exception propagates out of a
-  // non-detached coroutine.
+  // Blocks here, running the event loop, until ioc.stop() is called
+  // (the signal handler above) or an unhandled exception propagates out
+  // of a non-detached coroutine.
   ioc.run();
   return 0;
 }
