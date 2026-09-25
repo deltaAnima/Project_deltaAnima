@@ -3,11 +3,13 @@
 //     -> deltaEGO (emotion engine, loads its own YAML + VAD term DB)
 //     -> GpuFaissEngine (seeded with fake data — no real ingestion yet)
 //     -> EmbeddingClient (talks to TEI bge-m3)
+//     -> OpenJevClient (talks to OpenJev NLI classify — smoke-tested only,
+//        not yet wired into Orchestrator)
 //     -> Orchestrator (the actual /character/context pipeline logic)
 //     -> HttpServer (generic HTTP plumbing, routes into Orchestrator)
 // then hands control to io_context.run(), which drives every coroutine
-// (HTTP sessions, embedding calls, the Faiss search bridge, ...) from
-// here on.
+// (HTTP sessions, embedding calls, the Faiss search bridge, the OpenJev
+// smoke test, ...) from here on.
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/detached.hpp>
 #include <boost/asio/io_context.hpp>
@@ -17,6 +19,7 @@
 
 #include "Third_Party/json.hpp"
 #include "clients/embedding_client.hpp"
+#include "clients/openjev_client.hpp"
 #include "config/constants.hpp"
 #include "deltaEGO/deltaEGO.hpp"
 #include "engine/gpu_faiss_engine.hpp"
@@ -73,6 +76,34 @@ void SeedTestVectors(GpuFaissEngine &engine, int dim, int count)
             << " random test vectors (dim=" << dim << ")" << std::endl;
 }
 
+// One-shot smoke test for OpenJevClient, spawned (not awaited) from
+// main() before ioc.run(). Fires a single known premise/hypothesis pair
+// at OpenJev and logs the resulting scores, purely to prove the
+// HTTP -> OpenJev -> response chain works end to end before anything in
+// Orchestrator depends on it. DELETE this call once OpenJev is actually
+// wired into the request pipeline (or keep it behind a flag) — it's a
+// one-off diagnostic, not a health check.
+boost::asio::awaitable<void> TestOpenJev(clients::OpenJevClient &openjev)
+{
+  try
+  {
+    static constexpr char kPremise[] = "The cat is sleeping on the couch.";
+    static constexpr char kHypothesis[] = "The cat is awake.";
+
+    clients::OpenJevScores scores =
+        co_await openjev.Classify(kPremise, kHypothesis);
+
+    std::cout << "[OpenJev] test classify ok — "
+              << "contradiction=" << scores.contradiction << " "
+              << "entailment=" << scores.entailment << " "
+              << "neutral=" << scores.neutral << std::endl;
+  }
+  catch (const std::exception &e)
+  {
+    std::cerr << "[OpenJev] test classify failed: " << e.what() << std::endl;
+  }
+}
+
 } // namespace
 
 int main()
@@ -113,6 +144,12 @@ int main()
   // Embed().
   clients::EmbeddingClient embedder(ioc, config::kEmbeddingHost,
                                      config::kEmbeddingPort);
+
+  // Same story as EmbeddingClient above: no connection opens yet, just
+  // remembers where OpenJev lives. Not referenced by Orchestrator yet —
+  // see TestOpenJev() for the one-off smoke test proving it's reachable.
+  clients::OpenJevClient openjev(ioc, config::kOpenJevHost,
+                                  config::kOpenJevPort);
 
   // Orchestrator holds references to all three of the above — none of
   // them may be destroyed before Orchestrator (and, transitively, before
@@ -185,6 +222,13 @@ int main()
   // block. The actual accepting/serving only happens once we call
   // ioc.run() below.
   server.Run();
+
+  // Fire the OpenJev smoke test too — co_spawn schedules it, it doesn't
+  // run until ioc.run() starts driving the event loop below. detached
+  // means main() doesn't wait on it or see its result directly; success
+  // or failure is reported via the [OpenJev] log lines in TestOpenJev().
+  net::co_spawn(ioc, TestOpenJev(openjev), net::detached);
+
   std::cout << "[Fuli] orchestrator_server up — POST /character/context on :"
             << config::kListenPort << std::endl;
 

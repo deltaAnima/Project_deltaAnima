@@ -24,6 +24,10 @@ inline constexpr const char *kEmbeddingPort = "8080";
 // /character/context endpoint that FuliHandler (the Python side) calls.
 inline constexpr unsigned short kListenPort = 8080;
 
+// For OpenJev
+inline constexpr const char *kOpenJevHost = "127.0.0.1";
+inline constexpr const char *kOpenJevPort = "8080";
+
 // These are relative filesystem paths, resolved against whatever
 // directory you launch the binary from — NOT relative to this header or
 // to CMakeLists.txt. Always run `./build/orchestrator_server` from the
