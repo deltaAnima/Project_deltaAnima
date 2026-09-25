@@ -1,7 +1,8 @@
 // Entry point: wires every piece built so far into one running server.
 //   config (constants.hpp)
 //     -> deltaEGO (emotion engine, loads its own YAML + VAD term DB)
-//     -> GpuFaissEngine (seeded with fake data — no real ingestion yet)
+//     -> GpuFaissEngine (loads a saved index if one exists, else seeds
+//        fake data — see LoadFromDisk/SeedTestVectors below)
 //     -> EmbeddingClient (talks to TEI bge-m3)
 //     -> OpenJevClient (talks to OpenJev NLI classify — smoke-tested only,
 //        not yet wired into Orchestrator)
@@ -13,7 +14,13 @@
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/detached.hpp>
 #include <boost/asio/io_context.hpp>
+#include <boost/asio/signal_set.hpp>
+#include <boost/asio/steady_timer.hpp>
+#include <boost/asio/this_coro.hpp>
+#include <boost/asio/use_awaitable.hpp>
 #include <cmath>
+#include <csignal>
+#include <filesystem>
 #include <iostream>
 #include <random>
 
@@ -25,6 +32,7 @@
 #include "engine/gpu_faiss_engine.hpp"
 #include "health/health_checker.hpp"
 #include "http/http_server.hpp"
+#include "pipeline/memory_retriever.hpp"
 #include "pipeline/orchestrator.hpp"
 #include "schemas/fuli_schemas.hpp"
 #include "util/future_bridge.hpp"
@@ -126,8 +134,10 @@ int main()
   // character's resting emotional state before any stimulus is applied.
   std::cout << "[Init] loading deltaEGO config: " << config::kDeltaEgoConfigPath
             << std::endl;
-  deltaEGO::deltaEGO emotion_engine(config::kDeltaEgoConfigPath, 0.0f, 0.0f,
-                                     0.0f, 1.0f);
+  deltaEGO::deltaEGO emotion_engine(ioc, config::kDeltaEgoConfigPath, 0.0f, 0.0f,
+                                     0.0f, 1.0f, config::kOpenJevHost,
+                                     config::kOpenJevPort, config::kLlama5090Host,
+                                     config::kLlama5090Port);
   if (!emotion_engine.load_vad_db(config::kVadDbPath)) 
   {
     std::cerr << "[Init] warning: failed to load VAD DB from "
@@ -135,9 +145,25 @@ int main()
   }
 
   // GpuFaissEngine spins up its own dedicated worker thread internally
-  // (see gpu_faiss_engine.cpp) — nothing else to do here except seed it.
+  // (see gpu_faiss_engine.cpp). Directory must exist before SaveToDisk
+  // ever tries to write into it (std::ofstream doesn't create missing
+  // parent directories) — create_directories is a no-op if it's already
+  // there, so this is safe to run on every startup.
+  std::filesystem::create_directories(
+      std::filesystem::path(config::kFaissIndexPath).parent_path());
+
   GpuFaissEngine search_engine(config::kEmbeddingDim);
-  SeedTestVectors(search_engine, config::kEmbeddingDim, /*count=*/200);
+  if (search_engine.LoadFromDisk(config::kFaissIndexPath))
+  {
+    std::cout << "[Faiss] loaded " << search_engine.Size()
+              << " vectors from " << config::kFaissIndexPath << std::endl;
+  }
+  else
+  {
+    std::cout << "[Faiss] no saved index at " << config::kFaissIndexPath
+              << " — seeding random test vectors instead" << std::endl;
+    SeedTestVectors(search_engine, config::kEmbeddingDim, /*count=*/200);
+  }
 
   // EmbeddingClient doesn't open any connection yet — it just remembers
   // where TEI lives; the actual TCP connection happens per-call inside
@@ -218,6 +244,37 @@ int main()
       });
 
 
+  // Same "schedule, don't block" pattern as server.Run() below.
+  net::co_spawn(ioc, AutosaveLoop(search_engine), net::detached);
+
+  // Graceful shutdown: Ctrl+C (SIGINT) or `kill` (SIGTERM, the default
+  // signal `kill` sends and what most process managers use to ask for a
+  // clean stop) saves the index unconditionally, then stops the
+  // io_context so ioc.run() below returns and main() can exit normally.
+  // A hard kill -9 (or a crash) skips this entirely — that's what
+  // AutosaveLoop's periodic save is the safety net for.
+  net::signal_set signals(ioc, SIGINT, SIGTERM);
+  signals.async_wait([&search_engine, &ioc](const boost::system::error_code &ec,
+                                              int signal_number) {
+    if (ec)
+      return; // wait itself was cancelled — nothing to do
+    std::cout << "[Fuli] received signal " << signal_number
+              << ", saving index before shutdown..." << std::endl;
+    try
+    {
+      search_engine.SaveToDisk(config::kFaissIndexPath); // blocking is fine
+                                                            // here — we're
+                                                            // exiting anyway
+      std::cout << "[Faiss] saved " << search_engine.Size()
+                << " vectors to " << config::kFaissIndexPath << std::endl;
+    }
+    catch (const std::exception &e)
+    {
+      std::cerr << "[Faiss] shutdown save failed: " << e.what() << std::endl;
+    }
+    ioc.stop();
+  });
+
   // Run() only SCHEDULES the accept loop (via co_spawn) — it does not
   // block. The actual accepting/serving only happens once we call
   // ioc.run() below.
@@ -232,10 +289,9 @@ int main()
   std::cout << "[Fuli] orchestrator_server up — POST /character/context on :"
             << config::kListenPort << std::endl;
 
-  // Blocks here, running the event loop, until there's no more work to do
-  // (which in practice means "forever", since Listen() loops
-  // indefinitely) or an unhandled exception propagates out of a
-  // non-detached coroutine.
+  // Blocks here, running the event loop, until ioc.stop() is called
+  // (the signal handler above) or an unhandled exception propagates out
+  // of a non-detached coroutine.
   ioc.run();
   return 0;
 }

@@ -116,11 +116,13 @@ double sigmoid(double x)
 // delegation plus (for process_stimulus) assembling the response JSON.
 // ==========================================
 
-deltaEGO::deltaEGO(const std::string &config_path, float def_V, float def_A,
-                   float def_D, float def_radius)
-    : ayin_(std::make_unique<Ayin::Ayin>(config_path, def_V, def_A, def_D,
-                                          def_radius)),
-      carmen_(std::make_unique<Carmen::Carmen>())
+deltaEGO::deltaEGO(boost::asio::io_context &ioc,
+                  const std::string &config_path,
+                  float def_V, float def_A, float def_D, float def_radius,
+                  std::string host_jev, std::string port_jev,
+                  std::string host_5090, std::string port_5090)
+    : ayin_(std::make_unique<Ayin::Ayin>(config_path, def_V, def_A, def_D,def_radius)),
+      carmen_(std::make_unique<Carmen::Carmen>(ioc, host_jev, port_jev, host_5090, port_5090))
 {
 }
 
@@ -133,6 +135,24 @@ deltaEGO::deltaEGO(const std::string &config_path, float def_V, float def_A,
 deltaEGO::~deltaEGO() = default;
 deltaEGO::deltaEGO(deltaEGO &&) noexcept = default;
 deltaEGO &deltaEGO::operator=(deltaEGO &&) noexcept = default;
+
+boost::asio::awaitable<std::string> deltaEGO::sephirothic_tree(
+    std::string context, bool use_jev, bool fallback_to_5090, bool use_5090,
+    bool fallback_to_jev)
+{
+  // co_await, not a plain call — whisper_from_Carmen is a coroutine
+  // (it makes network calls to OpenJEV / the 5090 fallback), so without
+  // co_await this would just hand back the unstarted
+  // awaitable<VAD_Point> object itself instead of the actual result
+  // (and .V/.A/.D wouldn't even compile against that type).
+  structs::VAD_Point vad_point = co_await this->carmen_->whisper_from_Carmen(
+      context, use_jev, fallback_to_5090, use_5090, fallback_to_jev);
+
+  // process_stimulus itself is still plain/synchronous (no network
+  // calls in it) — co_return just wraps its result back into this
+  // coroutine's awaitable<std::string>.
+  co_return this->process_stimulus(vad_point.V, vad_point.A, vad_point.D);
+}
 
 bool deltaEGO::load_vad_db(const std::string &json_path)
 {

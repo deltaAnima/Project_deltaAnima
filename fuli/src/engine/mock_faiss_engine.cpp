@@ -12,4 +12,15 @@ public:
         p.set_value(std::move(res));
         return p.get_future();
     }
+
+    // No real index behind this mock, so there's nothing to add to —
+    // just acknowledge immediately. Only used when built with
+    // ENABLE_GPU=OFF (see CMakeLists.txt), so this never runs alongside
+    // the real GpuFaissEngine.
+    std::future<void> AsyncAddVectors(const std::vector<int64_t>&,
+                                       const std::vector<float>&) override {
+        std::promise<void> p;
+        p.set_value();
+        return p.get_future();
+    }
 };

@@ -84,6 +84,7 @@ add_custom_command(
 set(COMMON_SOURCES
     src/main.cpp
     src/pipeline/orchestrator.cpp
+    src/pipeline/memory_retriever.cpp
     src/clients/redis_db_client.cpp
     src/clients/embedding_client.cpp
     src/clients/openjev_client.cpp
