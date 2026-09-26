@@ -140,20 +140,6 @@ Orchestrator::HandleContextRequest(schemas::FuliContextRequest reqest)
   }
   resp.emotion_json = std::move(emotion_json);
 
-  if(this->mem_buffer_ == nullptr)
-  {
-
-  }
-  else
-  {
-    std::runtime_error error(
-        "mem_buffer is not nullptr going into HandleContextRequest — "
-        "a previous turn's HandleContextSaveRequest never ran (or is "
-        "still in flight), so mem_buffer is stale/corrupted.");
-    LogException("HandleContextRequest", error);
-    throw error;
-  }
-
   // --- [5] Assemble --------------------------------------------------------
   // (Just returning resp — the actual JSON serialization happens in
   // main.cpp via schemas::to_json, triggered by `json(resp).dump()`.)
@@ -163,29 +149,12 @@ Orchestrator::HandleContextRequest(schemas::FuliContextRequest reqest)
 boost::asio::awaitable<void>
 Orchestrator::HandleContextSaveRequest(schemas::FuliContextSaveRequest req)
 {
-  std::string embed_container = this->mem_buffer_->memory.content.user_input 
-                                + req.persona_response;
-  std::vector<float> embedded_context = co_await this->embedder_.Embed(embed_container);
-
-
-  
-  // NOT rethrown here — unlike HandleContextRequest's sites, this one
-  // matches the shape you gave me: log and continue. A failed Store()
-  // still lets mem_buffer_ get cleaned up below rather than leaking it
-  // or failing the whole save call over a memory that (if this keeps
-  // failing) was never going to persist anyway.
-  try
-  {
-      co_await this->memory_retriever_.Store(embedded_context, *(this->mem_buffer_));
-  }
-  catch (const std::exception& e)
-  {
-    LogException("HandleContextSaveRequest (Store)", e);
-  }
-  catch (...)
-  {
-    LogException("HandleContextSaveRequest (Store)");
-  }
-
+  // TODO: mem_buffer_ moved to MemoryRetriever's per-user map, but
+  // FuliContextSaveRequest has no field yet (user_name/session_id) to
+  // look the right entry back up with. Stubbed out — not calling
+  // Store() at all — until that correlation is designed, so the build
+  // isn't blocked on it in the meantime.
+  (void)req;
+  co_return;
 }
 } // namespace pipeline

@@ -58,8 +58,10 @@ MemoryMetadata FieldsToMetadata(const std::map<std::string, std::string> &f)
   meta.memory.content.user_input = Get(f, "memory.content.user_input");
   meta.memory.content.model_response = Get(f, "memory.content.model_response");
 
-  meta.memory.user.user_id =
-      static_cast<int>(GetInt64(f, "memory.user.user_id", 0));
+  meta.memory.user.user_id.high =
+      static_cast<uint64_t>(GetInt64(f, "memory.user.user_id.high", 0));
+  meta.memory.user.user_id.low =
+      static_cast<uint64_t>(GetInt64(f, "memory.user.user_id.low", 0));
   meta.memory.user.user_name = Get(f, "memory.user.user_name");
   meta.memory.user.user_content = Get(f, "memory.user.user_content");
 
@@ -116,7 +118,8 @@ std::map<std::string, std::string> MetadataToFields(const MemoryMetadata &meta)
   return {
       {"memory.content.user_input", meta.memory.content.user_input},
       {"memory.content.model_response", meta.memory.content.model_response},
-      {"memory.user.user_id", std::to_string(meta.memory.user.user_id)},
+      {"memory.user.user_id.high", std::to_string(meta.memory.user.user_id.high)},
+      {"memory.user.user_id.low", std::to_string(meta.memory.user.user_id.low)},
       {"memory.user.user_name", meta.memory.user.user_name},
       {"memory.user.user_content", meta.memory.user.user_content},
       {"memory.persona.persona_name", meta.memory.persona.persona_name},

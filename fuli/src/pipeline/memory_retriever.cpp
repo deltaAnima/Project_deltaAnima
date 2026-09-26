@@ -1,3 +1,7 @@
+#include <array>
+#include <cstdint>
+#include <iostream>
+
 #include "pipeline/memory_retriever.hpp"
 
 #include "util/future_bridge.hpp"
@@ -18,6 +22,74 @@ namespace {
 constexpr int kOversampleFactor = 5;
 
 } // namespace
+
+inline uint64_t MemoryRetriever::fmix64(uint64_t k)
+{
+    k ^= k >> 33;
+    k *= 0xff51afd7ed558ccdULL;
+    k ^= k >> 33;
+    k *= 0xc4ceb9fe1a85ec53ULL;
+    k ^= k >> 33;
+    return k;
+}
+inline UserId MemoryRetriever::MakeUserId(std::string_view key, uint64_t seed)
+{
+  const uint8_t* data = reinterpret_cast<const uint8_t*>(key.data());
+  const size_t nblocks = key.size() / 16;
+
+  uint64_t h1 = seed;
+  uint64_t h2 = seed;
+
+  const uint64_t c1 = 0x87c37b91114253d5ULL;
+  const uint64_t c2 = 0x4cf5ad432745937fULL;
+
+  const uint64_t* blocks = reinterpret_cast<const uint64_t*>(data);
+  for (size_t i = 0; i < nblocks; ++i) 
+  {
+    uint64_t k1 = blocks[i * 2 + 0];
+    uint64_t k2 = blocks[i * 2 + 1];
+
+    k1 *= c1; k1 = (k1 << 31) | (k1 >> 33); k1 *= c2; h1 ^= k1;
+    h1 = (h1 << 27) | (h1 >> 37); h1 += h2; h1 = h1 * 5 + 0x52dce729;
+
+    k2 *= c2; k2 = (k2 << 33) | (k2 >> 31); k2 *= c1; h2 ^= k2;
+    h2 = (h2 << 31) | (h2 >> 33); h2 += h1; h2 = h2 * 5 + 0x38495ab5;
+  }
+
+  const uint8_t* tail = data + nblocks * 16;
+  uint64_t k1 = 0;
+  uint64_t k2 = 0;
+
+  switch (key.size() & 15) 
+  {
+    case 15: k2 ^= uint64_t(tail[14]) << 48; [[fallthrough]];
+    case 14: k2 ^= uint64_t(tail[13]) << 40; [[fallthrough]];
+    case 13: k2 ^= uint64_t(tail[12]) << 32; [[fallthrough]];
+    case 12: k2 ^= uint64_t(tail[11]) << 24; [[fallthrough]];
+    case 11: k2 ^= uint64_t(tail[10]) << 16; [[fallthrough]];
+    case 10: k2 ^= uint64_t(tail[ 9]) << 8;  [[fallthrough]];
+    case  9: k2 ^= uint64_t(tail[ 8]) << 0;
+              k2 *= c2; k2 = (k2 << 33) | (k2 >> 31); k2 *= c1; h2 ^= k2;
+              [[fallthrough]];
+    case  8: k1 ^= uint64_t(tail[ 7]) << 56; [[fallthrough]];
+    case  7: k1 ^= uint64_t(tail[ 6]) << 48; [[fallthrough]];
+    case  6: k1 ^= uint64_t(tail[ 5]) << 40; [[fallthrough]];
+    case  5: k1 ^= uint64_t(tail[ 4]) << 32; [[fallthrough]];
+    case  4: k1 ^= uint64_t(tail[ 3]) << 24; [[fallthrough]];
+    case  3: k1 ^= uint64_t(tail[ 2]) << 16; [[fallthrough]];
+    case  2: k1 ^= uint64_t(tail[ 1]) << 8;  [[fallthrough]];
+    case  1: k1 ^= uint64_t(tail[ 0]) << 0;
+            k1 *= c1; k1 = (k1 << 31) | (k1 >> 33); k1 *= c2; h1 ^= k1;
+  }
+
+  h1 ^= key.size(); h2 ^= key.size();
+  h1 += h2; h2 += h1;
+  h1 = fmix64(h1); h2 = fmix64(h2);
+  h1 += h2; h2 += h1;
+
+  return UserId{ .high = h1, .low = h2 };
+}
+
 
 MemoryRetriever::MemoryRetriever(IVectorSearchEngine &search_engine,
                                   clients::RedisDbClient &redis)
@@ -91,4 +163,42 @@ net::awaitable<int64_t> MemoryRetriever::Store(const std::vector<float> &vector,
   co_return id;
 }
 
+std::pair<bool, clients::MemoryMetadata*> 
+MemoryRetriever::get_memory_buff_(const std::string& user_name, bool is_retrieve)
+{
+  UserId current_user_id = this->MakeUserId(user_name);
+  auto it = this->mem_buffer_.find(current_user_id);
+
+  if (it != this->mem_buffer_.end())
+  {
+    if (is_retrieve) 
+    {
+      std::cerr << "[WARN] Buffer already exists during retrieve step for: " << user_name << "\n";
+      return {false, nullptr};
+    }
+
+    return {true, it->second.get()};
+  }
+  auto new_mem = std::make_unique<clients::MemoryMetadata>();
+    std::cout << "[INFO] New context session created for user: " << user_name << "\n";
+
+  new_mem->memory.user.user_name = user_name;
+  new_mem->memory.user.user_id.high = current_user_id.high;
+  new_mem->memory.user.user_id.low  = current_user_id.low;
+
+  clients::MemoryMetadata* raw_ptr = new_mem.get();
+  this->mem_buffer_.emplace(current_user_id, std::move(new_mem));
+  
+  return std::pair<bool, clients::MemoryMetadata*> {
+    true, raw_ptr
+  };
+}
+bool MemoryRetriever::delete_memory_buff_(const UserId& user_id)
+{
+    return this->mem_buffer_.erase(user_id) > 0;
+}
+bool MemoryRetriever::delete_memory_buff_(std::string& user_name)
+{
+    return this->delete_memory_buff_(this->MakeUserId(static_cast<std::string_view>(user_name)));
+}
 } // namespace pipeline

@@ -56,7 +56,11 @@ struct MemoryMetadata
 
     struct User
     {
-      int user_id = 0;           // unique id of the user (currently TODO)
+      struct UserId
+      {
+        uint64_t high{0};
+        uint64_t low{0};
+      } user_id;
       std::string user_name;     // name of the user
       std::string user_content;  // same as user input
     } user;
@@ -139,8 +143,6 @@ private:
   std::string port_;
   std::shared_ptr<boost::redis::connection> conn_;
 
-  std::unordered_map<std::string, uint64_t> name_to_id_;
-  std::unordered_map<uint64_t, std::unique_ptr<clients::MemoryMetadata>> mem_buffer_;
 };
 
 } // namespace clients
