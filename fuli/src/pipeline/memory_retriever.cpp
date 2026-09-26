@@ -2,6 +2,10 @@
 #include <cstdint>
 #include <iostream>
 
+#include <boost/uuid/uuid.hpp>
+#include <boost/uuid/uuid_generators.hpp>
+#include <boost/uuid/uuid_io.hpp>
+
 #include "pipeline/memory_retriever.hpp"
 
 #include "util/future_bridge.hpp"
@@ -146,7 +150,7 @@ net::awaitable<std::vector<RetrievedMemory>> MemoryRetriever::Retrieve(
 }
 
 net::awaitable<int64_t> MemoryRetriever::Store(const std::vector<float> &vector,
-                                                clients::MemoryMetadata metadata) 
+                                                clients::MemoryMetadata* metadata) 
 {
   int64_t id = co_await this->redis_.NextId();
 
@@ -157,7 +161,7 @@ net::awaitable<int64_t> MemoryRetriever::Store(const std::vector<float> &vector,
   co_await util::AwaitFuture(
       this->search_engine_.AsyncAddVectors({id}, vector));
 
-  metadata.metadata.faiss_id = id;
+  metadata->metadata.faiss_id = id;
   co_await this->redis_.SetMemoryMetadata(id, metadata);
 
   co_return id;
@@ -179,6 +183,10 @@ MemoryRetriever::get_memory_buff_(const std::string& user_name, bool is_retrieve
 
     return {true, it->second.get()};
   }
+  if(!is_retrieve && it == this->mem_buffer_.end())
+  {
+    return {false, nullptr};
+  }
   auto new_mem = std::make_unique<clients::MemoryMetadata>();
     std::cout << "[INFO] New context session created for user: " << user_name << "\n";
 
@@ -197,8 +205,28 @@ bool MemoryRetriever::delete_memory_buff_(const UserId& user_id)
 {
     return this->mem_buffer_.erase(user_id) > 0;
 }
-bool MemoryRetriever::delete_memory_buff_(std::string& user_name)
+bool MemoryRetriever::delete_memory_buff_(const std::string& user_name)
 {
     return this->delete_memory_buff_(this->MakeUserId(static_cast<std::string_view>(user_name)));
+}
+
+std::string MemoryRetriever::GetOrCreateSessionId(const std::string& user_name, bool force_new)
+{
+  UserId id = this->MakeUserId(user_name);
+
+  if (!force_new)
+  {
+    auto it = this->session_ids_.find(id);
+    if (it != this->session_ids_.end())
+      return it->second;
+  }
+
+  boost::uuids::random_generator gen;
+  std::string session_id = boost::uuids::to_string(gen());
+
+  this->session_ids_[id] = session_id; // insert or overwrite an existing (force_new) entry
+  std::cout << "[INFO] New session " << session_id << " created for user: " << user_name << "\n";
+
+  return session_id;
 }
 } // namespace pipeline

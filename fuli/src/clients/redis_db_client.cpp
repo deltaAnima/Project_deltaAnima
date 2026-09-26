@@ -81,7 +81,11 @@ MemoryMetadata FieldsToMetadata(const std::map<std::string, std::string> &f)
     meta.memory.emotion.emotion_terms =
         parsed_terms.get<std::vector<std::string>>();
 
-  meta.memory.emotion.intensity = GetFloat(f, "memory.emotion.intensity", 0.0f);
+  meta.memory.emotion.current.V = GetFloat(f, "memory.emotion.current.V", 0.0f);
+  meta.memory.emotion.current.A = GetFloat(f, "memory.emotion.current.A", 0.0f);
+  meta.memory.emotion.current.D = GetFloat(f, "memory.emotion.current.D", 0.0f);
+  meta.memory.emotion.current.radius = GetFloat(f, "memory.emotion.current.radius", 0.0f);
+  meta.memory.emotion.similarity = GetFloat(f, "memory.emotion.similarity", 0.0f);
 
   meta.emotion_analysis.deltaEGO_analysis = Get(f, "emotion_analysis.deltaEGO_analysis", "{}");
 
@@ -113,25 +117,29 @@ MemoryMetadata FieldsToMetadata(const std::map<std::string, std::string> &f)
   return meta;
 }
 
-std::map<std::string, std::string> MetadataToFields(const MemoryMetadata &meta) 
+std::map<std::string, std::string> MetadataToFields(const MemoryMetadata* meta) 
 {
   return {
-      {"memory.content.user_input", meta.memory.content.user_input},
-      {"memory.content.model_response", meta.memory.content.model_response},
-      {"memory.user.user_id.high", std::to_string(meta.memory.user.user_id.high)},
-      {"memory.user.user_id.low", std::to_string(meta.memory.user.user_id.low)},
-      {"memory.user.user_name", meta.memory.user.user_name},
-      {"memory.user.user_content", meta.memory.user.user_content},
-      {"memory.persona.persona_name", meta.memory.persona.persona_name},
-      {"memory.persona.persona_content", meta.memory.persona.persona_content},
-      {"memory.emotion.emotion_terms", json(meta.memory.emotion.emotion_terms).dump()},
-      {"memory.emotion.intensity", std::to_string(meta.memory.emotion.intensity)},
-      {"emotion_analysis.deltaEGO_analysis", meta.emotion_analysis.deltaEGO_analysis},
-      {"metadata.session_id", meta.metadata.session_id.value_or("")},
-      {"metadata.importance", std::to_string(meta.metadata.importance)},
-      {"metadata.timestamp", std::to_string(meta.metadata.timestamp)},
-      {"metadata.faiss_id", std::to_string(meta.metadata.faiss_id)},
-      {"query.request_query", json(meta.query.request_query).dump()},
+      {"memory.content.user_input", meta->memory.content.user_input},
+      {"memory.content.model_response", meta->memory.content.model_response},
+      {"memory.user.user_id.high", std::to_string(meta->memory.user.user_id.high)},
+      {"memory.user.user_id.low", std::to_string(meta->memory.user.user_id.low)},
+      {"memory.user.user_name", meta->memory.user.user_name},
+      {"memory.user.user_content", meta->memory.user.user_content},
+      {"memory.persona.persona_name", meta->memory.persona.persona_name},
+      {"memory.persona.persona_content", meta->memory.persona.persona_content},
+      {"memory.emotion.emotion_terms", json(meta->memory.emotion.emotion_terms).dump()},
+      {"memory.emotion.current.V", std::to_string(meta->memory.emotion.current.V)},
+      {"memory.emotion.current.A", std::to_string(meta->memory.emotion.current.A)},
+      {"memory.emotion.current.D", std::to_string(meta->memory.emotion.current.D)},
+      {"memory.emotion.current.radius", std::to_string(meta->memory.emotion.current.radius)},
+      {"memory.emotion.similarity", std::to_string(meta->memory.emotion.similarity)},
+      {"emotion_analysis.deltaEGO_analysis", meta->emotion_analysis.deltaEGO_analysis},
+      {"metadata.session_id", meta->metadata.session_id.value_or("")},
+      {"metadata.importance", std::to_string(meta->metadata.importance)},
+      {"metadata.timestamp", std::to_string(meta->metadata.timestamp)},
+      {"metadata.faiss_id", std::to_string(meta->metadata.faiss_id)},
+      {"query.request_query", json(meta->query.request_query).dump()},
   };
 }
 
@@ -180,7 +188,7 @@ RedisDbClient::GetMemoryMetadata(int64_t faiss_id)
 }
 
 net::awaitable<void>
-RedisDbClient::SetMemoryMetadata(int64_t faiss_id, const MemoryMetadata &meta)
+RedisDbClient::SetMemoryMetadata(int64_t faiss_id, const MemoryMetadata* meta)
 {
   redis::request req;
   req.push_range("HSET", MemKey(faiss_id), MetadataToFields(meta));

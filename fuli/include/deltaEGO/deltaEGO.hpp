@@ -14,6 +14,13 @@
 #include <memory>
 #include <string>
 
+// sephirothic_tree/process_stimulus return nlohmann::json by value below
+// — same rule as boost::asio::awaitable<T> a few lines down: a return
+// type needs the complete type, not just a forward declaration, so this
+// has to be a real include rather than relying on whatever some other
+// header a consumer happens to include first pulls in ahead of this one.
+#include "Third_Party/json.hpp"
+
 // io_context is still only forward-declared — a reference parameter
 // doesn't need the complete type. boost::asio::awaitable<T>, though, IS
 // included for real below: sephirothic_tree returns one, and a return
@@ -201,7 +208,7 @@ namespace deltaEGO {
     // network) — co_await only works inside another coroutine, so this
     // one has to be one too. Callers must co_await this, the same way
     // Orchestrator co_awaits EmbeddingClient::Embed.
-    boost::asio::awaitable<std::string>
+    boost::asio::awaitable<nlohmann::json>
     sephirothic_tree(std::string context, bool use_jev = false,
                       bool fallback_to_5090 = false, bool use_5090 = true,
                       bool fallback_to_jev = false);
@@ -212,7 +219,7 @@ namespace deltaEGO {
 
     // Feeds one VAD stimulus into the physics engine and returns the
     // resulting state + analysis as a JSON string.
-    std::string process_stimulus(float v, float a, float d);
+    nlohmann::json process_stimulus(float v, float a, float d);
 
     // Re-reads the YAML config passed to the constructor.
     bool reload_config();

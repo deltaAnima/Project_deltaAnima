@@ -29,6 +29,13 @@ struct FuliContextRequest {
   std::string user_input;
   std::optional<std::string> context; // free-form extra context, may be null
 
+  // Session identity/lifetime is owned by MemoryRetriever (see
+  // GetOrCreateSessionId), not by the caller — this is the one signal
+  // Python has over it: true forces a fresh session id for user_name
+  // instead of reusing whatever's on file, e.g. when Python knows this
+  // is the start of a new conversation rather than a continuation.
+  bool new_session = false;
+
   RAGQueryOrder rag_policy; // parsed from config.rag_policy
 
   // config.emotion_policy (OCEAN traits, physics weights, backend_flags
@@ -52,6 +59,7 @@ inline void from_json(const json &j, FuliContextRequest &r) {
   j.at("user_input").get_to(r.user_input);
   if (j.contains("context") && !j.at("context").is_null())
     r.context = j.at("context").get<std::string>();
+  r.new_session = j.value("new_session", false);
 
   const auto &cfg = j.at("config");
   r.rag_policy = cfg.at("rag_policy").get<RAGQueryOrder>();
@@ -66,6 +74,7 @@ inline void to_json(json &j, const FuliContextRequest &r) {
       {"user_name", r.user_name},
       {"user_input", r.user_input},
       {"context", r.context ? json(*r.context) : json(nullptr)},
+      {"new_session", r.new_session},
       {"config",
        {
            {"rag_policy", r.rag_policy},
@@ -128,6 +137,7 @@ inline void to_json(json &j, const FuliContextResponse &r)
 // actually be embedded + written via MemoryRetriever::Store.
 struct FuliContextSaveRequest
 {
+  std::string user_name;
   std::string persona_name;
   std::string persona_response;
 };

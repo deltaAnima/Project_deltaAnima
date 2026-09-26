@@ -136,7 +136,7 @@ deltaEGO::~deltaEGO() = default;
 deltaEGO::deltaEGO(deltaEGO &&) noexcept = default;
 deltaEGO &deltaEGO::operator=(deltaEGO &&) noexcept = default;
 
-boost::asio::awaitable<std::string> deltaEGO::sephirothic_tree(
+boost::asio::awaitable<nlohmann::json> deltaEGO::sephirothic_tree(
     std::string context, bool use_jev, bool fallback_to_5090, bool use_5090,
     bool fallback_to_jev)
 {
@@ -159,7 +159,7 @@ bool deltaEGO::load_vad_db(const std::string &json_path)
   return ayin_->load_vad_db(json_path);
 }
 
-std::string deltaEGO::process_stimulus(float v, float a, float d)
+nlohmann::json deltaEGO::process_stimulus(float v, float a, float d)
 {
   structs::VAD_Point input = {v, a, d, 1.0f};
 
@@ -176,7 +176,7 @@ std::string deltaEGO::process_stimulus(float v, float a, float d)
   j_out["similarity"] = result.similarity;
   j_out["analysis"] = result.analysis;
 
-  return j_out.dump();
+  return j_out;
 }
 
 bool deltaEGO::reload_config()

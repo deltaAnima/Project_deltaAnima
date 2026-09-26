@@ -1,5 +1,7 @@
 #include "pipeline/orchestrator.hpp"
+#include <chrono>
 #include <iostream>
+#include <boost/format.hpp>
 #include <boost/stacktrace.hpp>
 
 namespace pipeline {
@@ -19,7 +21,13 @@ void LogException(const char *where, const std::exception &e)
             << "[STACKTRACE]:\n"
             << boost::stacktrace::stacktrace() << "\n";
 }
-
+void LogException(const char *where, const std::string& details)
+{
+  std::cerr << "<Orchestrator::" << where << ">\n"
+            << "[ERROR] Logic Exception: " << details << "\n"
+            << "[STACKTRACE]:\n"
+            << boost::stacktrace::stacktrace() << "\n";
+}
 void LogException(const char *where)
 {
   std::cerr << "<Orchestrator::" << where << ">\n"
@@ -39,7 +47,33 @@ Orchestrator::Orchestrator(clients::EmbeddingClient &embedder,
 net::awaitable<schemas::FuliContextResponse>
 Orchestrator::HandleContextRequest(schemas::FuliContextRequest reqest) 
 {
-  
+  std::pair<bool, clients::MemoryMetadata*> current_mem
+                = this->memory_retriever_.get_memory_buff_(reqest.user_name, true);
+  if(current_mem.first == false)
+  {
+    // get_memory_buff_ returns {false, nullptr} when a buffer for this
+    // user already existed going into the retrieve stage — meaning a
+    // previous turn's HandleContextSaveRequest never ran (or is still
+    // in flight). current_mem.second is null here, so this has to stop
+    // the request rather than fall through into the null deref below.
+    std::string details = boost::str(boost::format(
+        "User name %1%'s memory buffer already exists going into the "
+        "retrieve stage — a previous turn's HandleContextSaveRequest "
+        "never ran (or is still in flight), so the buffer is stale.")
+        % reqest.user_name);
+    LogException("HandleContextRequest (Hashing)", details);
+    throw std::runtime_error(details);
+  }
+
+  // Session ownership lives in MemoryRetriever, not with the caller —
+  // the same resolved id is used both as Retrieve()'s session_id filter
+  // below and as this turn's new-memory tag in the assemble step, so a
+  // conversation's own earlier turns stay recallable across the whole
+  // session regardless of whatever (if anything) the caller passed in
+  // rag_policy.memory_config.session_id.
+  std::string session_id =
+      this->memory_retriever_.GetOrCreateSessionId(reqest.user_name, reqest.new_session);
+
   // --- [2] Embedding ---------------------------------------------------
   // dense_vector is only ever set when something upstream already
   // computed an embedding. FuliHandler's docstring is explicit that this
@@ -62,7 +96,7 @@ Orchestrator::HandleContextRequest(schemas::FuliContextRequest reqest)
     // just with this structured log/stacktrace on the way out now.
     try
     {
-      query_vector = co_await embedder_.Embed(reqest.user_input);
+      query_vector = co_await this->embedder_.Embed(reqest.user_input);
     }
     catch (const std::exception &e)
     {
@@ -85,11 +119,19 @@ Orchestrator::HandleContextRequest(schemas::FuliContextRequest reqest)
   // recency_weight are parsed but not applied) — see
   // schemas/rag_schemas.hpp for exactly which RAGQueryOrder fields are
   // still parsed-but-currently-ignored.
+  // session_id is always ours, not the caller's — overwritten here
+  // regardless of whatever rag_policy.memory_config.session_id held, so
+  // Retrieve()'s filter matches the same session this turn's new memory
+  // will be tagged with in the assemble step below.
+  schemas::MemoryQueryConfig memory_config =
+      reqest.rag_policy.memory_config.value_or(schemas::MemoryQueryConfig{});
+  memory_config.session_id = session_id;
+
   std::vector<pipeline::RetrievedMemory> retrieved;
   try
   {
     retrieved = co_await memory_retriever_.Retrieve(
-        query_vector, reqest.rag_policy.top_k, reqest.rag_policy.memory_config);
+        query_vector, reqest.rag_policy.top_k, memory_config);
   }
   catch (const std::exception &e)
   {
@@ -105,10 +147,12 @@ Orchestrator::HandleContextRequest(schemas::FuliContextRequest reqest)
   // --- [4-A] Emotion branch -----------------------------------------------
   //TODO: integrate OpenJEV inference server to extract VAD stimulus from user_input
   //Current : only 5090
-  std::string emotion_json;
+  nlohmann::json emotion_json;
+  std::string emotion_json_dump;
   try
   {
     emotion_json = co_await this->emotion_engine_.sephirothic_tree(reqest.user_input);
+    emotion_json_dump = emotion_json.dump();
   }
   catch (const std::exception &e)
   {
@@ -138,23 +182,95 @@ Orchestrator::HandleContextRequest(schemas::FuliContextRequest reqest)
     hit.model_response = mem.metadata.memory.content.model_response;
     resp.hits.push_back(std::move(hit));
   }
-  resp.emotion_json = std::move(emotion_json);
+  resp.emotion_json = std::move(emotion_json_dump);
 
   // --- [5] Assemble --------------------------------------------------------
-  // (Just returning resp — the actual JSON serialization happens in
-  // main.cpp via schemas::to_json, triggered by `json(resp).dump()`.)
+  // Fills in current_mem.second (this user's per-turn buffer in
+  // MemoryRetriever, keyed by MakeUserId(user_name)) with everything
+  // HandleContextSaveRequest will need once the persona's response comes
+  // back: the user's side of the turn, the emotion read taken from it,
+  // and the original request for provenance. sephirothic_tree's json
+  // only has a singular "emotion_term" (not a list), so it's wrapped in
+  // a one-element vector to match Memory::Emotion::emotion_terms's shape.
+  // VAD_Point's to_json/from_json are declared `inline` inside
+  // deltaEGO.cpp, so they're only visible in that translation unit —
+  // emotion_json's "current_state" fields have to be pulled out by hand
+  // here rather than via emotion_json.get<VAD_Point>().
+  current_mem.second->memory.content.user_input = reqest.user_input;
+  current_mem.second->emotion_analysis.deltaEGO_analysis = emotion_json_dump;
+
+  const auto &current_state = emotion_json.at("current_state");
+  current_mem.second->memory.emotion.current.V = current_state.at("V").get<float>();
+  current_mem.second->memory.emotion.current.A = current_state.at("A").get<float>();
+  current_mem.second->memory.emotion.current.D = current_state.at("D").get<float>();
+  current_mem.second->memory.emotion.current.radius = current_state.at("radius").get<float>();
+  current_mem.second->memory.emotion.similarity = emotion_json.value("similarity", 0.0f);
+  current_mem.second->memory.emotion.emotion_terms =
+      {emotion_json.value("emotion_term", std::string())};
+
+  current_mem.second->query.request_query = reqest;
+  current_mem.second->metadata.session_id = session_id;
+
   co_return resp;
 }
 
 boost::asio::awaitable<void>
-Orchestrator::HandleContextSaveRequest(schemas::FuliContextSaveRequest req)
+Orchestrator::HandleContextSaveRequest(schemas::FuliContextSaveRequest reqest)
 {
-  // TODO: mem_buffer_ moved to MemoryRetriever's per-user map, but
-  // FuliContextSaveRequest has no field yet (user_name/session_id) to
-  // look the right entry back up with. Stubbed out — not calling
-  // Store() at all — until that correlation is designed, so the build
-  // isn't blocked on it in the meantime.
-  (void)req;
+  std::pair<bool, clients::MemoryMetadata*> current_mem
+                = this->memory_retriever_.get_memory_buff_(reqest.user_name, false);
+
+  if(current_mem.first == false)
+  {
+    std::string details = boost::str(boost::format(
+        "User name %1%'s memory buffer is empty in save stage")
+        % reqest.user_name);
+    LogException("HandleContextSaveRequest (Hashing)", details);
+    throw std::runtime_error(details);
+  }
+
+  // HandleContextRequest already filled in the user's half of the turn
+  // (memory.content.user_input, memory.user.*, the emotion read, query.
+  // request_query) when this buffer was created — the persona's half is
+  // only known now that the save request has the actual response.
+  // metadata.faiss_id is NOT set here: MemoryRetriever::Store fills it in
+  // itself once Redis hands back the freshly-allocated id.
+  current_mem.second->memory.content.model_response = reqest.persona_response;
+  current_mem.second->memory.user.user_content = current_mem.second->memory.content.user_input;
+  current_mem.second->memory.persona.persona_name = reqest.persona_name;
+  current_mem.second->memory.persona.persona_content = reqest.persona_response;
+  current_mem.second->metadata.timestamp =
+      std::chrono::duration_cast<std::chrono::seconds>(
+          std::chrono::system_clock::now().time_since_epoch())
+          .count();
+
+  std::string embedding_container = current_mem.second->memory.content.user_input
+                                  + reqest.persona_response;
+
+  // NOT rethrown — matches the shape you gave me earlier: log and
+  // continue. A failed Store() still lets the buffer get cleaned up
+  // below rather than leaking it or failing the whole save call over a
+  // memory that (if this keeps failing) was never going to persist
+  // anyway.
+  try
+  {
+    std::vector<float> embedded_context = co_await this->embedder_.Embed(embedding_container);
+    co_await this->memory_retriever_.Store(embedded_context, current_mem.second);
+  }
+  catch (const std::exception& e)
+  {
+    LogException("HandleContextSaveRequest (Store)", e);
+  }
+  catch (...)
+  {
+    LogException("HandleContextSaveRequest (Store)");
+  }
+
+  // Always erase, success or failure — nothing else ever clears this
+  // user's buffer, and HandleContextRequest's "buffer already exists"
+  // check would trip on this user's very next turn otherwise.
+  this->memory_retriever_.delete_memory_buff_(reqest.user_name);
+
   co_return;
 }
 } // namespace pipeline

@@ -99,13 +99,26 @@ class MemoryRetriever
       // vectors never show up in Retrieve() once memory_config filtering (or
       // even just the "no metadata -> skip" rule) is involved.
   boost::asio::awaitable<int64_t> Store(const std::vector<float> &vector,
-    clients::MemoryMetadata metadata);
+    clients::MemoryMetadata* metadata);
 
-  std::pair<bool, clients::MemoryMetadata*> 
+  std::pair<bool, clients::MemoryMetadata*>
     get_memory_buff_(const std::string& user_name, bool is_retrieve);
-  
+
   bool delete_memory_buff_(const UserId& user_id);
   bool delete_memory_buff_(const std::string& user_name);
+
+  // Session ownership lives here, not with the caller (Python): the
+  // first call for a given user_name mints a fresh UUID and remembers
+  // it in session_ids_ (separate from mem_buffer_, which is erased every
+  // turn once a save completes — a session has to outlive any single
+  // turn). Every later call for that same user_name gets the same id
+  // back, so Retrieve()'s session_id filter and a new memory's
+  // metadata.session_id stay consistent across a whole conversation.
+  // force_new (driven by FuliContextRequest::new_session) skips the
+  // lookup and always mints + remembers a fresh id instead — the one
+  // lever the caller has over an otherwise-permanent-per-user_name
+  // session.
+  std::string GetOrCreateSessionId(const std::string& user_name, bool force_new = false);
 
 private:
   inline uint64_t fmix64(uint64_t k);
@@ -113,9 +126,10 @@ private:
 
   IVectorSearchEngine &search_engine_;
   clients::RedisDbClient &redis_;
-  
+
   std::unordered_map<std::string, UserId> name_to_id_;
   std::unordered_map<UserId, std::unique_ptr<clients::MemoryMetadata>> mem_buffer_;
+  std::unordered_map<UserId, std::string> session_ids_;
 };
 
 } // namespace pipeline

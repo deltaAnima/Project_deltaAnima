@@ -16,7 +16,7 @@
 #include <vector>
 
 #include "Third_Party/json.hpp"
-
+#include "deltaEGO/deltaEGO.hpp"
 #include "schemas/fuli_schemas.hpp"
 
 // Forward-declared instead of #including <boost/redis/connection.hpp> —
@@ -73,8 +73,9 @@ struct MemoryMetadata
 
     struct Emotion
     {
+      deltaEGO::structs::VAD_Point current;
       std::vector<std::string> emotion_terms;
-      float intensity = 0.0f;
+      float similarity;
     } emotion;
   } memory;
 
@@ -121,7 +122,7 @@ public:
 
   // HSET mem:{faiss_id} ... — overwrites any existing fields for that id.
   boost::asio::awaitable<void> SetMemoryMetadata(int64_t faiss_id,
-                                                  const MemoryMetadata &meta);
+                                                  const MemoryMetadata* meta);
 
   // INCR on a dedicated counter key — atomically allocates and returns a
   // fresh, globally unique memory id. This is what a new memory gets
