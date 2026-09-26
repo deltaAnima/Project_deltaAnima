@@ -19,30 +19,56 @@ using json = nlohmann::json;
 
 namespace {
 
-// Forces the model's reply to be exactly {"v": <num>, "a": <num>,
-// "d": <num>} instead of free-form chat text — see
+// Forces the model's reply to be exactly {"Valence": <num>, "Arousal":
+// <num>, "Dominance": <num>} instead of free-form chat text — see
 // Llama5090Client::EstimateVad's doc comment on why this matters more
 // here than it would for, say, EmbeddingClient (there's no equivalent
 // "the server just returns a vector" guarantee for a chat model).
+// Capitalized keys (not v/a/d) to match kSystemPrompt below — this is
+// the previously-validated prompt/schema pairing, not our own choice;
+// EstimateVad's return type stays the lowercase VadEstimate{v,a,d} the
+// rest of this project already uses, the capitalization only exists on
+// the wire between here and the model.
 json VadJsonSchema() {
   return json{
       {"type", "object"},
       {"properties",
        {
-           {"v", {{"type", "number"}, {"minimum", -1}, {"maximum", 1}}},
-           {"a", {{"type", "number"}, {"minimum", -1}, {"maximum", 1}}},
-           {"d", {{"type", "number"}, {"minimum", -1}, {"maximum", 1}}},
+           {"Valence", {{"type", "number"}, {"minimum", -1}, {"maximum", 1}}},
+           {"Arousal", {{"type", "number"}, {"minimum", -1}, {"maximum", 1}}},
+           {"Dominance", {{"type", "number"}, {"minimum", -1}, {"maximum", 1}}},
        }},
-      {"required", {"v", "a", "d"}},
+      {"required", {"Valence", "Arousal", "Dominance"}},
   };
 }
 
-constexpr const char *kSystemPrompt =
-    "You are a precise Valence-Arousal-Dominance (VAD) emotion analyzer. "
-    "Given a piece of text, respond with ONLY a JSON object with three "
-    "fields: v (valence: negative=-1 to positive=1), a (arousal: "
-    "calm=-1 to excited=1), d (dominance: submissive=-1 to in-control=1). "
-    "No other text.";
+// Reminh-persona VAD prompt — previously validated against this
+// server, not something invented for this integration. Adapted for the
+// two-message chat structure EstimateVad already uses below: the
+// original template's trailing `The message you just heard: "{user_text}"`
+// line is dropped here since `text` is sent as its own "user" role
+// message instead of being substituted into the system prompt.
+constexpr const char *kSystemPrompt = R"(You are Reminh. Read the message someone just said to you (below).
+Your task is NOT to analyze the speaker's emotion.
+Instead, infer how YOU (Reminh) would FEEL upon hearing this message,
+based on your persona described above.
+
+Express that feeling as a VAD (Valence-Arousal-Dominance) state.
+
+CRITICAL: Output MUST be a single JSON object.
+No explanation. No narrative. No markdown.
+
+Each value is a float from -1.0 to +1.0.
+If hearing this makes you feel negative (hurt, afraid, angry, uneasy),
+Valence MUST be negative. Do NOT normalize to 0~1.
+
+Format:
+{"Valence": <float -1.0~1.0>, "Arousal": <float>, "Dominance": <float>}
+
+Examples (YOUR reaction to what was said):
+someone threatens you      -> {"Valence": -0.6, "Arousal": 0.6, "Dominance": -0.5}
+someone insults you        -> {"Valence": -0.5, "Arousal": 0.5, "Dominance": 0.2}
+someone comforts you kindly -> {"Valence": 0.6, "Arousal": -0.2, "Dominance": 0.3})";
 
 } // namespace
 
@@ -97,10 +123,13 @@ net::awaitable<VadEstimate> Llama5090Client::EstimateVad(std::string text) const
   std::string content = outer.at("choices").at(0).at("message").at("content").get<std::string>();
   json vad_json = json::parse(content);
 
+  // Wire format is Valence/Arousal/Dominance (see kSystemPrompt/
+  // VadJsonSchema above) — mapped into the same lowercase v/a/d
+  // VadEstimate every other caller in this project already expects.
   VadEstimate estimate;
-  estimate.v = std::clamp(vad_json.at("v").get<float>(), -1.0f, 1.0f);
-  estimate.a = std::clamp(vad_json.at("a").get<float>(), -1.0f, 1.0f);
-  estimate.d = std::clamp(vad_json.at("d").get<float>(), -1.0f, 1.0f);
+  estimate.v = std::clamp(vad_json.at("Valence").get<float>(), -1.0f, 1.0f);
+  estimate.a = std::clamp(vad_json.at("Arousal").get<float>(), -1.0f, 1.0f);
+  estimate.d = std::clamp(vad_json.at("Dominance").get<float>(), -1.0f, 1.0f);
   co_return estimate;
 }
 

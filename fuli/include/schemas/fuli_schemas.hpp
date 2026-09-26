@@ -102,7 +102,8 @@ struct FuliContextResponse {
 
 // to_json is the mirror of from_json: nlohmann calls this automatically
 // when you do `json(some_response)` or `j = some_response`.
-inline void to_json(json &j, const FuliContextResponse &r) {
+inline void to_json(json &j, const FuliContextResponse &r) 
+{
   j["hits"] = json::array();
   for (const auto &h : r.hits) {
     j["hits"].push_back({{"id", h.id},
@@ -117,6 +118,37 @@ inline void to_json(json &j, const FuliContextResponse &r) {
   j["emotion"] = json::parse(r.emotion_json, nullptr, /*allow_exceptions=*/false);
   if (j["emotion"].is_discarded())
     j["emotion"] = json::object();
+}
+
+// Body for the (future) write-side endpoint — see the project discussion
+// on why /character/context can't auto-save memories itself: it only
+// ever sees user_input, never the model's reply, since that gets
+// generated in Python AFTER this server responds. This is what the
+// Python side posts back once it has persona_response, so the turn can
+// actually be embedded + written via MemoryRetriever::Store.
+struct FuliContextSaveRequest
+{
+  std::string persona_name;
+  std::string persona_response;
+};
+
+// Parses what Python sends. Required fields use .get_to() (throws if
+// missing) — same defensive convention as FuliContextRequest::from_json
+// above, just simpler here since both fields are plain strings.
+inline void from_json(const json &j, FuliContextSaveRequest &r)
+{
+  j.at("persona_name").get_to(r.persona_name);
+  j.at("persona_response").get_to(r.persona_response);
+}
+
+// Mirror of from_json — mainly so this struct can round-trip if it ever
+// gets embedded elsewhere for storage, the same reason
+// FuliContextRequest has one (see MemoryMetadata::Query in
+// redis_db_client.hpp).
+inline void to_json(json &j, const FuliContextSaveRequest &r)
+{
+  j["persona_name"]     = r.persona_name;
+  j["persona_response"] = r.persona_response;
 }
 
 } // namespace schemas

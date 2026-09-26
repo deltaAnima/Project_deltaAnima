@@ -1,5 +1,6 @@
 #include "deltaEGO/Carmen.hpp"
 
+#include <cstdio>
 #include <iostream>
 #include <stdexcept>
 
@@ -21,7 +22,94 @@ structs::VAD_Point ToVadPoint(const clients::VadEstimate &estimate)
   return structs::VAD_Point{estimate.v, estimate.a, estimate.d, 1.0f};
 }
 
+// --- OpenJEV grid-search config ------------------------------------------
+// -1.0..1.0 in 0.1 steps = 21 candidate values per axis. PLACEHOLDER
+// hypothesis wording below — the project discussed using real,
+// psychologically-calibrated templates for this, not written yet at the
+// time this was wired up. Swap ValenceHypothesis/ArousalHypothesis/
+// DominanceHypothesis's wording freely; nothing else here depends on the
+// exact phrasing.
+constexpr float kVadGridMin = -1.0f;
+constexpr float kVadGridMax = 1.0f;
+constexpr float kVadGridStep = 0.1f;
+
+std::string FormatGridValue(float value)
+{
+  // "%.1f"-equivalent without pulling in <cstdio> — one decimal place
+  // matches kVadGridStep's resolution.
+  char buf[16];
+  std::snprintf(buf, sizeof(buf), "%.1f", value);
+  return std::string(buf);
+}
+
+std::string ValenceHypothesis(float value)
+{
+  return "The emotional tone of this message is rated " + FormatGridValue(value) +
+         " on a scale from -1 (very negative) to 1 (very positive).";
+}
+
+std::string ArousalHypothesis(float value)
+{
+  return "The energy level expressed in this message is rated " + FormatGridValue(value) +
+         " on a scale from -1 (very calm) to 1 (very excited).";
+}
+
+std::string DominanceHypothesis(float value)
+{
+  return "The sense of control expressed in this message is rated " + FormatGridValue(value) +
+         " on a scale from -1 (very submissive) to 1 (very dominant).";
+}
+
 } // namespace
+
+// Grid search: for each of the 3 axes, ask OpenJev "does this message
+// entail a rating of X?" for every X on the -1..1 grid, then take the
+// entailment-probability-weighted average of X as that axis's estimate.
+// A near-zero total weight (OpenJev essentially rejected every
+// hypothesis on that axis) falls back to 0.0 rather than dividing by
+// ~zero.
+//
+// PERFORMANCE NOTE: this is 3 axes * 21 grid values = 63 sequential
+// HTTP round trips per call, each opening a fresh connection (see
+// OpenJevClient::Classify's own doc comment — no keep-alive/pooling
+// yet). That's almost certainly too slow to sit on a live request path
+// as-is; firing the 63 calls concurrently (e.g. via
+// boost::asio::experimental::make_parallel_group) instead of one at a
+// time is the obvious next step once this needs to be fast, not just
+// correct. Written sequentially first to keep the logic easy to read
+// and debug.
+boost::asio::awaitable<structs::VAD_Point> Carmen::EstimateVadViaOpenJev(
+    std::string context) const
+{
+  float v_sum = 0.0f, v_weight = 0.0f;
+  float a_sum = 0.0f, a_weight = 0.0f;
+  float d_sum = 0.0f, d_weight = 0.0f;
+
+  for (float value = kVadGridMin; value <= kVadGridMax + 1e-4f; value += kVadGridStep)
+  {
+    clients::OpenJevScores v_scores =
+        co_await this->openjev_.Classify(context, ValenceHypothesis(value));
+    v_sum += static_cast<float>(v_scores.entailment) * value;
+    v_weight += static_cast<float>(v_scores.entailment);
+
+    clients::OpenJevScores a_scores =
+        co_await this->openjev_.Classify(context, ArousalHypothesis(value));
+    a_sum += static_cast<float>(a_scores.entailment) * value;
+    a_weight += static_cast<float>(a_scores.entailment);
+
+    clients::OpenJevScores d_scores =
+        co_await this->openjev_.Classify(context, DominanceHypothesis(value));
+    d_sum += static_cast<float>(d_scores.entailment) * value;
+    d_weight += static_cast<float>(d_scores.entailment);
+  }
+
+  structs::VAD_Point result{};
+  result.V = v_weight > 1e-6f ? v_sum / v_weight : 0.0f;
+  result.A = a_weight > 1e-6f ? a_sum / a_weight : 0.0f;
+  result.D = d_weight > 1e-6f ? d_sum / d_weight : 0.0f;
+  result.radius = 1.0f;
+  co_return result;
+}
 
 boost::asio::awaitable<structs::VAD_Point> Carmen::whisper_from_Carmen(
     std::string context, bool use_jev, bool fallback_to_5090, bool use_5090,
@@ -57,7 +145,7 @@ boost::asio::awaitable<structs::VAD_Point> Carmen::whisper_from_Carmen(
       bool jev_failed = false;
       try
       {
-        result = ToVadPoint(co_await this->temp_jev.EstimateVad(context));
+        result = co_await this->EstimateVadViaOpenJev(context);
       }
       catch (const std::exception &e)
       {
@@ -83,7 +171,7 @@ boost::asio::awaitable<structs::VAD_Point> Carmen::whisper_from_Carmen(
       // caller instead of silently swallowing it.
       try
       {
-        result = ToVadPoint(co_await this->temp_jev.EstimateVad(context));
+        result = co_await this->EstimateVadViaOpenJev(context);
       }
       catch (const std::exception &e)
       {
@@ -110,7 +198,7 @@ boost::asio::awaitable<structs::VAD_Point> Carmen::whisper_from_Carmen(
       {
         try
         {
-          result = ToVadPoint(co_await this->temp_jev.EstimateVad(context));
+          result = co_await this->EstimateVadViaOpenJev(context);
         }
         catch (const std::exception &e)
         {

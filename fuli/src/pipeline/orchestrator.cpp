@@ -44,14 +44,9 @@ Orchestrator::HandleContextRequest(schemas::FuliContextRequest reqest)
       query_vector, reqest.rag_policy.top_k, reqest.rag_policy.memory_config);
 
   // --- [4-A] Emotion branch -----------------------------------------------
-  // ALWAYS feeds a neutral (v=0, a=0, d=0) stimulus into deltaEGO right
-  // now. The real design calls for extracting a per-request VAD stimulus
-  // from user_input via the OpenJEV inference server (see the project's
-  // grid-search-over-discretized-VAD-bins design discussed separately),
-  // but that integration is explicitly deferred until the MVP plumbing
-  // (this file) is proven out first. Swap this line out once OpenJEV is
-  // ready to be called.
-  std::string emotion_json = emotion_engine_.process_stimulus(0.0f, 0.0f, 0.0f);
+  //TODO: integrate OpenJEV inference server to extract VAD stimulus from user_input
+  //Current : only 5090
+  std::string emotion_json = co_await this->emotion_engine_.sephirothic_tree(reqest.user_input);
 
   // --- [4-B] Rerank/refine branch ------------------------------------------
   // Deferred: enable_rerank (TEI cross-encoder call), fusion_config
@@ -71,10 +66,24 @@ Orchestrator::HandleContextRequest(schemas::FuliContextRequest reqest)
   }
   resp.emotion_json = std::move(emotion_json);
 
+  if(this->mem_buffer_ == nullptr)
+  {
+
+  }
+  else
+  {
+    throw std::runtime_error("orchestrator <HandleContextRequest> - mem_buffer is not nullptr. mem_buffer corrupted");
+  }
+  
   // --- [5] Assemble --------------------------------------------------------
   // (Just returning resp — the actual JSON serialization happens in
   // main.cpp via schemas::to_json, triggered by `json(resp).dump()`.)
   co_return resp;
 }
 
+boost::asio::awaitable<schemas::FuliContextSaveRequest>
+Orchestrator::HandleContextSaveRequest(schemas::FuliContextSaveRequest req)
+{
+
+}
 } // namespace pipeline

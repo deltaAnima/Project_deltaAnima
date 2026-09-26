@@ -6,6 +6,7 @@
 #include "deltaEGO/deltaEGO.hpp"
 #include "pipeline/memory_retriever.hpp"
 #include "schemas/fuli_schemas.hpp"
+#include "clients/redis_db_client.hpp"
 
 namespace pipeline {
 
@@ -50,11 +51,15 @@ public:
   // moved-in json blob) and returns a fully-assembled response.
   boost::asio::awaitable<schemas::FuliContextResponse>
   HandleContextRequest(schemas::FuliContextRequest req);
+  boost::asio::awaitable<schemas::FuliContextSaveRequest>
+  HandleContextSaveRequest(schemas::FuliContextSaveRequest req);
 
 private:
   clients::EmbeddingClient &embedder_;
   MemoryRetriever &memory_retriever_;
   deltaEGO::deltaEGO &emotion_engine_;
+
+  clients::MemoryMetadata* mem_buffer_;
 };
 
 } // namespace pipeline

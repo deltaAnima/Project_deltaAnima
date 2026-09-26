@@ -192,18 +192,19 @@ namespace deltaEGO {
 
     // Same text -> VAD -> emotion-analysis pipeline as process_stimulus,
     // but starting from raw text instead of an already-known (v,a,d) —
-    // calls Carmen::whisper_from_Carmen first to derive the stimulus
-    // (OpenJEV primary, the 5090 machine as fallback), then feeds that
-    // into the same physics/search path process_stimulus uses.
+    // calls Carmen::whisper_from_Carmen first to derive the stimulus,
+    // then feeds that into the same physics/search path process_stimulus
+    // uses. Defaults (see whisper_from_Carmen) mean the 5090 machine is
+    // the basis unless you explicitly opt into OpenJEV with use_jev=true.
     // Returns an awaitable, not a plain std::string, because
     // whisper_from_Carmen is itself a coroutine (it calls out over the
     // network) — co_await only works inside another coroutine, so this
     // one has to be one too. Callers must co_await this, the same way
     // Orchestrator co_awaits EmbeddingClient::Embed.
     boost::asio::awaitable<std::string>
-    sephirothic_tree(std::string context, bool use_jev,
-                      bool fallback_to_5090, bool use_5090,
-                      bool fallback_to_jev);
+    sephirothic_tree(std::string context, bool use_jev = false,
+                      bool fallback_to_5090 = false, bool use_5090 = true,
+                      bool fallback_to_jev = false);
 
     // Loads the VAD term database (see VAD_DB/VAD.json) used for nearest
     // neighbor emotion-term lookup. Returns false on parse/IO failure.

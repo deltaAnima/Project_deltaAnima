@@ -88,6 +88,7 @@ set(COMMON_SOURCES
     src/clients/redis_db_client.cpp
     src/clients/embedding_client.cpp
     src/clients/openjev_client.cpp
+    src/clients/llama_5090_client.cpp
     src/http/http_server.cpp
     src/deltaEGO/deltaEGO.cpp
     src/deltaEGO/Ayin.cpp

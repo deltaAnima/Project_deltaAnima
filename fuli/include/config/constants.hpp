@@ -32,21 +32,14 @@ inline constexpr const char *kRedisPort = "8080";
 inline constexpr const char *kLlama5090Host = "127.0.0.1";
 inline constexpr const char *kLlama5090Port = "8080";
 
-// TODO(openjev-branch): placeholder until the OpenJEV integration
-// (Carmen's "Gebura" member) is merged from its own branch and its real
-// host/port are known. Currently unreachable — Carmen falls back to
-// the 5090 estimator whenever this fails, so a placeholder here doesn't
-// block anything, it's just not pointing at a real server yet.
+// Where the OpenJev NLI classifier lives — Carmen's primary VAD
+// estimator, with the 5090 machine (kLlama5090Host) as its fallback.
 inline constexpr const char *kOpenJevHost = "127.0.0.1";
-inline constexpr const char *kOpenJevPort = "0";
+inline constexpr const char *kOpenJevPort = "8080";
 
 // The port THIS server (orchestrator_server) listens on for the
 // /character/context endpoint that FuliHandler (the Python side) calls.
 inline constexpr unsigned short kListenPort = 8080;
-
-// For OpenJev
-inline constexpr const char *kOpenJevHost = "127.0.0.1";
-inline constexpr const char *kOpenJevPort = "8080";
 
 // These are relative filesystem paths, resolved against whatever
 // directory you launch the binary from — NOT relative to this header or

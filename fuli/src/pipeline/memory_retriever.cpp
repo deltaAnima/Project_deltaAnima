@@ -25,10 +25,11 @@ MemoryRetriever::MemoryRetriever(IVectorSearchEngine &search_engine,
 
 net::awaitable<std::vector<RetrievedMemory>> MemoryRetriever::Retrieve(
     const std::vector<float> &query_vector, int top_k,
-    const std::optional<schemas::MemoryQueryConfig> &config) {
+    const std::optional<schemas::MemoryQueryConfig> &config) 
+{
   int fetch_k = top_k * kOversampleFactor;
   SearchResult raw = co_await util::AwaitFuture(
-      search_engine_.AsyncSearch(query_vector, fetch_k));
+      this->search_engine_.AsyncSearch(query_vector, fetch_k));
 
   std::vector<RetrievedMemory> results;
   results.reserve(static_cast<size_t>(top_k));
@@ -37,18 +38,20 @@ net::awaitable<std::vector<RetrievedMemory>> MemoryRetriever::Retrieve(
   // Faiss's search() guarantees for L2), so the first top_k candidates
   // that SURVIVE filtering are, by construction, the best top_k overall
   // — nothing further down the list could have a smaller distance.
-  for (size_t i = 0; i < raw.ids.size(); ++i) {
+  for (size_t i = 0; i < raw.ids.size(); ++i) 
+  {
     // One Redis round trip per candidate, awaited sequentially. Fine
     // for the handful of candidates an MVP oversample produces —
     // pipelining these (fire every HGETALL, then await them together)
     // is the obvious next step once this is measurably slow.
     std::optional<clients::MemoryMetadata> meta =
-        co_await redis_.GetMemoryMetadata(raw.ids[i]);
+        co_await this->redis_.GetMemoryMetadata(raw.ids[i]);
     if (!meta)
       continue; // nothing stored for this id (e.g. a seeded test vector
                 // that was never given real metadata)
 
-    if (config) {
+    if (config) 
+    {
       // Only reject on an explicit mismatch — a memory with no
       // session_id recorded is treated as unscoped rather than
       // excluded. That's a judgment call, not a spec: tighten this to
@@ -71,18 +74,19 @@ net::awaitable<std::vector<RetrievedMemory>> MemoryRetriever::Retrieve(
 }
 
 net::awaitable<int64_t> MemoryRetriever::Store(const std::vector<float> &vector,
-                                                clients::MemoryMetadata metadata) {
-  int64_t id = co_await redis_.NextId();
+                                                clients::MemoryMetadata metadata) 
+{
+  int64_t id = co_await this->redis_.NextId();
 
   // AsyncAddVectors (not the blocking AddVectors) — Store() runs on the
   // request path, potentially concurrently with other requests, so it
   // must not block the io_context thread the way AddVectors's blocking
   // .get() would.
   co_await util::AwaitFuture(
-      search_engine_.AsyncAddVectors({id}, vector));
+      this->search_engine_.AsyncAddVectors({id}, vector));
 
   metadata.metadata.faiss_id = id;
-  co_await redis_.SetMemoryMetadata(id, metadata);
+  co_await this->redis_.SetMemoryMetadata(id, metadata);
 
   co_return id;
 }

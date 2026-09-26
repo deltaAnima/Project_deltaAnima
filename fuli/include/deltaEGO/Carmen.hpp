@@ -1,6 +1,7 @@
 #pragma once
 #include <boost/asio/io_context.hpp>
 #include "clients/llama_5090_client.hpp"
+#include "clients/openjev_client.hpp"
 #include "deltaEGO/deltaEGO.hpp"
 // Internal header — NOT part of deltaEGO's public API (see
 // deltaEGO.hpp's own doc comment). Shared between deltaEGO.cpp (which
@@ -21,16 +22,17 @@ class Carmen
 public:
   // ioc is NOT owned — it must be the SAME io_context main.cpp created
   // and calls ioc.run() on. Every network client in this project
-  // (EmbeddingClient, RedisDbClient, Llama5090Client) takes
-  // io_context& the same way, for the same reason: there is exactly one
-  // event loop for the whole server, and a coroutine spawned onto any
-  // OTHER io_context (e.g. one Carmen constructed for itself) would
-  // never actually run, because nothing calls .run() on it — co_await
-  // inside temp/Gebura's calls would hang forever, not fail loudly.
+  // (EmbeddingClient, RedisDbClient, OpenJevClient, Llama5090Client)
+  // takes io_context& the same way, for the same reason: there is
+  // exactly one event loop for the whole server, and a coroutine
+  // spawned onto any OTHER io_context (e.g. one Carmen constructed for
+  // itself) would never actually run, because nothing calls .run() on
+  // it — co_await inside openjev_/Gebura_5090's calls would hang
+  // forever, not fail loudly.
   Carmen(boost::asio::io_context &ioc,
         std::string host_jev, std::string port_jev,
         std::string host_5090, std::string port_5090)
-      : ioc_(ioc), temp_jev(ioc_, host_jev, port_jev),
+      : ioc_(ioc), openjev_(ioc_, host_jev, port_jev),
         Gebura_5090(ioc_, host_5090, port_5090) {};
 
   ~Carmen() = default;
@@ -42,20 +44,37 @@ public:
   // deltaEGO::deltaEGO, same name as the enclosing namespace, not the
   // namespace itself. Same reason Ayin.hpp/Ayin.cpp write bare
   // `structs::`/`func::` throughout.)
-  // net::awaitable<...>, not a plain structs::VAD_Point — Gebura/temp's
-  // EstimateVad() are themselves coroutines (see llama_5090_client.hpp),
-  // so anything that calls them (via co_await) has to be a coroutine
-  // too. Callers co_await this the same way Orchestrator co_awaits
+  // net::awaitable<...>, not a plain structs::VAD_Point — openjev_'s
+  // Classify() and Gebura_5090's EstimateVad() are themselves coroutines
+  // (see openjev_client.hpp/llama_5090_client.hpp), so anything that
+  // calls them (via co_await) has to be a coroutine too. Callers
+  // co_await this the same way Orchestrator co_awaits
   // EmbeddingClient::Embed.
+  // Defaults to "5090 only, no OpenJEV" — the 5090 path (validated
+  // Reminh-persona prompt, one fast LLM call) is the current basis;
+  // OpenJEV's grid-search path still exists (see EstimateVadViaOpenJev)
+  // but is opt-in only until its placeholder hypothesis wording and
+  // per-call-pair Classify() (batching is the friend's branch's job, not
+  // this one's) are sorted out. Pass use_jev=true explicitly to use it.
   boost::asio::awaitable<structs::VAD_Point>
-  whisper_from_Carmen(std::string context, bool use_jev,
-                      bool fallback_to_5090, bool use_5090,
-                      bool fallback_to_jev);
+  whisper_from_Carmen(std::string context, bool use_jev = false,
+                      bool fallback_to_5090 = false, bool use_5090 = true,
+                      bool fallback_to_jev = false);
 
 private:
+  // OpenJev's /classify only scores ONE premise/hypothesis pair at a
+  // time (see openjev_client.hpp) — it doesn't hand back a VAD triple
+  // directly the way Llama5090Client::EstimateVad does. This is the
+  // pre/post-processing Carmen's class comment above already promised:
+  // build a hypothesis per candidate value on the -1..1 grid for each
+  // axis, call openjev_.Classify() for each, and weighted-average the
+  // entailment probabilities into one (v, a, d). See Carmen.cpp.
+  boost::asio::awaitable<structs::VAD_Point>
+  EstimateVadViaOpenJev(std::string context) const;
+
   boost::asio::io_context &ioc_; // borrowed, not owned — see ctor comment
-  clients::Llama5090Client temp_jev;   // temporary VAD estimator
-  clients::Llama5090Client Gebura_5090; // fallback VAD estimator for when OpenJEV is unavailable
+  clients::OpenJevClient openjev_;      // opt-in VAD estimator (via EstimateVadViaOpenJev's grid search) — pass use_jev=true to whisper_from_Carmen to use it
+  clients::Llama5090Client Gebura_5090; // DEFAULT VAD estimator — see whisper_from_Carmen's default arguments
 };
 
 } // namespace Carmen

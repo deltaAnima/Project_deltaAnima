@@ -27,6 +27,7 @@
 #include "Third_Party/json.hpp"
 #include "clients/embedding_client.hpp"
 #include "clients/openjev_client.hpp"
+#include "clients/redis_db_client.hpp"
 #include "config/constants.hpp"
 #include "deltaEGO/deltaEGO.hpp"
 #include "engine/gpu_faiss_engine.hpp"
@@ -82,6 +83,40 @@ void SeedTestVectors(GpuFaissEngine &engine, int dim, int count)
   engine.AddVectors(ids, flat); // blocks until the GPU worker thread adds these
   std::cout << "[Faiss] seeded " << engine.Size()
             << " random test vectors (dim=" << dim << ")" << std::endl;
+}
+
+// Safety net for anything short of a graceful shutdown (kill -9, crash,
+// power loss) — the SIGINT/SIGTERM handler in main() saves
+// unconditionally on a clean exit, but a hard kill never gets to run
+// that. Loops for the whole server lifetime; only exits when the
+// coroutine's own steady_timer wait gets cancelled, which happens when
+// ioc.stop() is called and the process is about to exit anyway.
+boost::asio::awaitable<void> AutosaveLoop(GpuFaissEngine &engine)
+{
+  auto executor = co_await boost::asio::this_coro::executor;
+  boost::asio::steady_timer timer(executor);
+
+  for (;;)
+  {
+    timer.expires_after(std::chrono::seconds(config::kAutosaveIntervalSeconds));
+    co_await timer.async_wait(boost::asio::use_awaitable);
+
+    try
+    {
+      // AsyncSaveToDisk (not the blocking SaveToDisk) — this coroutine
+      // runs on the io_context thread alongside live request handling,
+      // so blocking here would stall every in-flight request for
+      // however long the save takes, same reasoning as everywhere else
+      // a std::future gets bridged with util::AwaitFuture instead of
+      // .get()/.wait() directly.
+      co_await util::AwaitFuture(engine.AsyncSaveToDisk(config::kFaissIndexPath));
+      std::cout << "[Faiss] autosaved " << engine.Size() << " vectors" << std::endl;
+    }
+    catch (const std::exception &e)
+    {
+      std::cerr << "[Faiss] autosave failed: " << e.what() << std::endl;
+    }
+  }
 }
 
 // One-shot smoke test for OpenJevClient, spawned (not awaited) from
@@ -177,13 +212,24 @@ int main()
   clients::OpenJevClient openjev(ioc, config::kOpenJevHost,
                                   config::kOpenJevPort);
 
-  // Orchestrator holds references to all three of the above — none of
-  // them may be destroyed before Orchestrator (and, transitively, before
-  // every request coroutine referencing it) is done. Since all four
-  // objects are local variables in main() that live until ioc.run()
-  // returns, and ioc.run() is the last thing this function does, that
-  // invariant holds automatically here.
-  pipeline::Orchestrator orchestrator(embedder, search_engine, emotion_engine);
+  // RedisDbClient's background connection (see Run()) needs to be
+  // started before anything calls Get/SetMemoryMetadata on it.
+  clients::RedisDbClient redis_client(ioc, config::kRedisHost,
+                                       config::kRedisPort);
+  redis_client.Run();
+
+  // MemoryRetriever is the Faiss+Redis join layer — it's what
+  // Orchestrator actually talks to for retrieval now, not
+  // search_engine/redis_client directly.
+  pipeline::MemoryRetriever memory_retriever(search_engine, redis_client);
+
+  // Orchestrator holds references to all of the above — none of them
+  // may be destroyed before Orchestrator (and, transitively, before
+  // every request coroutine referencing it) is done. Since every one of
+  // these objects is a local variable in main() that lives until
+  // ioc.run() returns, and ioc.run() is the last thing this function
+  // does, that invariant holds automatically here.
+  pipeline::Orchestrator orchestrator(embedder, memory_retriever, emotion_engine);
 
   // Same reference-holding, same lifetime rule as Orchestrator above:
   // health_checker just borrows embedder, doesn't own it.
@@ -209,6 +255,17 @@ int main()
         // json(resp) triggers schemas::to_json(...) the same way.
         co_return json(resp).dump();
       });
+
+  server.RegisterRoute(
+    "PUT /character/context_memory",
+    [&orchestrator](std::string body) -> net::awaitable<std::string> 
+    {
+      schemas::FuliContextSaveRequest req = 
+          json::parse(body).get<schemas::FuliContextSaveRequest>();
+      
+      co_await orchestrator.HandleContextSaveRequest(std::move(req));
+    }
+  );
 
   server.RegisterRoute(
       "GET /health",
