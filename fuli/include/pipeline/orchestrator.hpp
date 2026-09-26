@@ -1,6 +1,8 @@
 #pragma once
 
 #include <boost/asio/awaitable.hpp>
+#include <functional>
+#include <unordered_map>
 
 #include "clients/embedding_client.hpp"
 #include "deltaEGO/deltaEGO.hpp"
@@ -36,7 +38,8 @@ namespace pipeline {
 // against. Once OpenJEV is wired in as an actual network call, revisit
 // this class to fork the two branches for real (see AwaitSearch in the
 // .cpp for the kind of bridging that will be needed).
-class Orchestrator {
+class Orchestrator 
+{
 public:
   // None of these are owned by Orchestrator — main.cpp constructs them
   // all and must keep them alive for at least as long as this object
@@ -51,7 +54,7 @@ public:
   // moved-in json blob) and returns a fully-assembled response.
   boost::asio::awaitable<schemas::FuliContextResponse>
   HandleContextRequest(schemas::FuliContextRequest req);
-  boost::asio::awaitable<schemas::FuliContextSaveRequest>
+  boost::asio::awaitable<void>
   HandleContextSaveRequest(schemas::FuliContextSaveRequest req);
 
 private:
@@ -59,7 +62,6 @@ private:
   MemoryRetriever &memory_retriever_;
   deltaEGO::deltaEGO &emotion_engine_;
 
-  clients::MemoryMetadata* mem_buffer_;
 };
 
 } // namespace pipeline

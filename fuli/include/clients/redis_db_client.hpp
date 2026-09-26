@@ -93,7 +93,8 @@ struct MemoryMetadata
   } query;
 };
 
-class RedisDbClient {
+class RedisDbClient 
+{
 public:
   RedisDbClient(boost::asio::io_context &ioc, std::string host,
                 std::string port);
@@ -137,6 +138,9 @@ private:
   std::string host_;
   std::string port_;
   std::shared_ptr<boost::redis::connection> conn_;
+
+  std::unordered_map<std::string, uint64_t> name_to_id_;
+  std::unordered_map<uint64_t, std::unique_ptr<clients::MemoryMetadata>> mem_buffer_;
 };
 
 } // namespace clients

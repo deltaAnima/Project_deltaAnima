@@ -124,6 +124,7 @@ target_link_libraries(orchestrator_server PRIVATE
     protobuf::libprotobuf
     Threads::Threads
     yaml-cpp::yaml-cpp
+    dl
 )
 
 if(ENABLE_GPU)

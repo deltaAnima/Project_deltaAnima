@@ -1,8 +1,34 @@
 #include "pipeline/orchestrator.hpp"
+#include <iostream>
+#include <boost/stacktrace.hpp>
 
 namespace pipeline {
 
 namespace net = boost::asio;
+
+namespace {
+
+// Shared logging shape for every catch site in this file — `where`
+// names the call that failed (e.g. "HandleContextRequest (Embed)") so
+// the two-line log + full stack trace can be told apart in stderr
+// without needing a debugger attached after the fact.
+void LogException(const char *where, const std::exception &e)
+{
+  std::cerr << "<Orchestrator::" << where << ">\n"
+            << "[ERROR] Exception: " << e.what() << "\n"
+            << "[STACKTRACE]:\n"
+            << boost::stacktrace::stacktrace() << "\n";
+}
+
+void LogException(const char *where)
+{
+  std::cerr << "<Orchestrator::" << where << ">\n"
+            << "[ERROR] Unknown exception occurred!\n"
+            << "[STACKTRACE]:\n"
+            << boost::stacktrace::stacktrace() << "\n";
+}
+
+} // namespace
 
 Orchestrator::Orchestrator(clients::EmbeddingClient &embedder,
                             MemoryRetriever &memory_retriever,
@@ -13,6 +39,7 @@ Orchestrator::Orchestrator(clients::EmbeddingClient &embedder,
 net::awaitable<schemas::FuliContextResponse>
 Orchestrator::HandleContextRequest(schemas::FuliContextRequest reqest) 
 {
+  
   // --- [2] Embedding ---------------------------------------------------
   // dense_vector is only ever set when something upstream already
   // computed an embedding. FuliHandler's docstring is explicit that this
@@ -22,13 +49,31 @@ Orchestrator::HandleContextRequest(schemas::FuliContextRequest reqest)
   // conversation's curl example that bypassed TEI entirely) and for any
   // future caller that genuinely already has a vector on hand.
   std::vector<float> query_vector;
-  if (reqest.rag_policy.dense_vector.has_value()) 
+  if (reqest.rag_policy.dense_vector.has_value())
   {
     query_vector = *reqest.rag_policy.dense_vector;
   }
   else
   {
-    query_vector = co_await embedder_.Embed(reqest.user_input);
+    // Rethrown after logging — everything downstream (search, response
+    // assembly) depends on query_vector, so there's no sensible
+    // degraded-but-still-succeeds path if this fails; the request
+    // should still end in a 500 (via http_server.cpp's generic catch),
+    // just with this structured log/stacktrace on the way out now.
+    try
+    {
+      query_vector = co_await embedder_.Embed(reqest.user_input);
+    }
+    catch (const std::exception &e)
+    {
+      LogException("HandleContextRequest (Embed)", e);
+      throw;
+    }
+    catch (...)
+    {
+      LogException("HandleContextRequest (Embed)");
+      throw;
+    }
   }
 
   // --- [3] First-pass retrieval -----------------------------------------
@@ -40,13 +85,41 @@ Orchestrator::HandleContextRequest(schemas::FuliContextRequest reqest)
   // recency_weight are parsed but not applied) — see
   // schemas/rag_schemas.hpp for exactly which RAGQueryOrder fields are
   // still parsed-but-currently-ignored.
-  std::vector<pipeline::RetrievedMemory> retrieved = co_await memory_retriever_.Retrieve(
-      query_vector, reqest.rag_policy.top_k, reqest.rag_policy.memory_config);
+  std::vector<pipeline::RetrievedMemory> retrieved;
+  try
+  {
+    retrieved = co_await memory_retriever_.Retrieve(
+        query_vector, reqest.rag_policy.top_k, reqest.rag_policy.memory_config);
+  }
+  catch (const std::exception &e)
+  {
+    LogException("HandleContextRequest (Retrieve)", e);
+    throw;
+  }
+  catch (...)
+  {
+    LogException("HandleContextRequest (Retrieve)");
+    throw;
+  }
 
   // --- [4-A] Emotion branch -----------------------------------------------
   //TODO: integrate OpenJEV inference server to extract VAD stimulus from user_input
   //Current : only 5090
-  std::string emotion_json = co_await this->emotion_engine_.sephirothic_tree(reqest.user_input);
+  std::string emotion_json;
+  try
+  {
+    emotion_json = co_await this->emotion_engine_.sephirothic_tree(reqest.user_input);
+  }
+  catch (const std::exception &e)
+  {
+    LogException("HandleContextRequest (sephirothic_tree)", e);
+    throw;
+  }
+  catch (...)
+  {
+    LogException("HandleContextRequest (sephirothic_tree)");
+    throw;
+  }
 
   // --- [4-B] Rerank/refine branch ------------------------------------------
   // Deferred: enable_rerank (TEI cross-encoder call), fusion_config
@@ -56,7 +129,8 @@ Orchestrator::HandleContextRequest(schemas::FuliContextRequest reqest)
   // parsed but not enforced yet either.
   schemas::FuliContextResponse resp;
   resp.hits.reserve(retrieved.size());
-  for (const auto &mem : retrieved) {
+  for (const auto &mem : retrieved) 
+  {
     schemas::MemoryHit hit;
     hit.id = mem.id;
     hit.score = mem.distance;
@@ -72,18 +146,46 @@ Orchestrator::HandleContextRequest(schemas::FuliContextRequest reqest)
   }
   else
   {
-    throw std::runtime_error("orchestrator <HandleContextRequest> - mem_buffer is not nullptr. mem_buffer corrupted");
+    std::runtime_error error(
+        "mem_buffer is not nullptr going into HandleContextRequest — "
+        "a previous turn's HandleContextSaveRequest never ran (or is "
+        "still in flight), so mem_buffer is stale/corrupted.");
+    LogException("HandleContextRequest", error);
+    throw error;
   }
-  
+
   // --- [5] Assemble --------------------------------------------------------
   // (Just returning resp — the actual JSON serialization happens in
   // main.cpp via schemas::to_json, triggered by `json(resp).dump()`.)
   co_return resp;
 }
 
-boost::asio::awaitable<schemas::FuliContextSaveRequest>
+boost::asio::awaitable<void>
 Orchestrator::HandleContextSaveRequest(schemas::FuliContextSaveRequest req)
 {
+  std::string embed_container = this->mem_buffer_->memory.content.user_input 
+                                + req.persona_response;
+  std::vector<float> embedded_context = co_await this->embedder_.Embed(embed_container);
+
+
+  
+  // NOT rethrown here — unlike HandleContextRequest's sites, this one
+  // matches the shape you gave me: log and continue. A failed Store()
+  // still lets mem_buffer_ get cleaned up below rather than leaking it
+  // or failing the whole save call over a memory that (if this keeps
+  // failing) was never going to persist anyway.
+  try
+  {
+      co_await this->memory_retriever_.Store(embedded_context, *(this->mem_buffer_));
+  }
+  catch (const std::exception& e)
+  {
+    LogException("HandleContextSaveRequest (Store)", e);
+  }
+  catch (...)
+  {
+    LogException("HandleContextSaveRequest (Store)");
+  }
 
 }
 } // namespace pipeline
