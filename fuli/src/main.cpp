@@ -258,14 +258,15 @@ int main()
       });
 
   server.RegisterRoute(
-    "PUT /character/context_memory",
+    "POST /character/context_memory",
     [&orchestrator](std::string body) -> net::awaitable<std::string> 
     {
       schemas::FuliContextSaveRequest req =
           json::parse(body).get<schemas::FuliContextSaveRequest>();
 
-      co_await orchestrator.HandleContextSaveRequest(std::move(req));
-      co_return nlohmann::json{{"status", "ok"}}.dump();
+      nlohmann::json saved_memory =
+          co_await orchestrator.HandleContextSaveRequest(std::move(req));
+      co_return saved_memory.dump();
     }
   );
 

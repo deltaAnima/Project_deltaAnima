@@ -223,7 +223,7 @@ Orchestrator::HandleContextRequest(schemas::FuliContextRequest reqest)
   co_return resp;
 }
 
-boost::asio::awaitable<void>
+boost::asio::awaitable<nlohmann::json>
 Orchestrator::HandleContextSaveRequest(schemas::FuliContextSaveRequest reqest)
 {
   std::pair<bool, clients::MemoryMetadata*> current_mem
@@ -275,11 +275,18 @@ Orchestrator::HandleContextSaveRequest(schemas::FuliContextSaveRequest reqest)
     LogException("HandleContextSaveRequest (Store)");
   }
 
+  // Captured before erasing below — current_mem.second (and everything
+  // it points to) is gone once delete_memory_buff_ runs. Built via
+  // MemoryMetadata's to_json (see redis_db_client.hpp) regardless of
+  // whether Store() above actually succeeded, so the caller can see
+  // what was attempted either way.
+  nlohmann::json saved_memory = *current_mem.second;
+
   // Always erase, success or failure — nothing else ever clears this
   // user's buffer, and HandleContextRequest's "buffer already exists"
   // check would trip on this user's very next turn otherwise.
   this->memory_retriever_.delete_memory_buff_(reqest.user_name);
 
-  co_return;
+  co_return saved_memory;
 }
 } // namespace pipeline

@@ -54,7 +54,7 @@ public:
   // moved-in json blob) and returns a fully-assembled response.
   boost::asio::awaitable<schemas::FuliContextResponse>
   HandleContextRequest(schemas::FuliContextRequest req);
-  boost::asio::awaitable<void>
+  boost::asio::awaitable<nlohmann::json>
   HandleContextSaveRequest(schemas::FuliContextSaveRequest req);
 
 private:
