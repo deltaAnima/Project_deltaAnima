@@ -199,11 +199,14 @@ Orchestrator::HandleContextRequest(schemas::FuliContextRequest reqest)
   current_mem.second->memory.content.user_input = reqest.user_input;
   current_mem.second->emotion_analysis.deltaEGO_analysis = emotion_json_dump;
 
+  // VAD_Point's to_json (deltaEGO.cpp) writes lowercase single-letter
+  // keys ("v"/"a"/"d"/"r"), not the struct's own field names — this bit
+  // me once already when I wrote V/A/D/radius here the first time.
   const auto &current_state = emotion_json.at("current_state");
-  current_mem.second->memory.emotion.current.V = current_state.at("V").get<float>();
-  current_mem.second->memory.emotion.current.A = current_state.at("A").get<float>();
-  current_mem.second->memory.emotion.current.D = current_state.at("D").get<float>();
-  current_mem.second->memory.emotion.current.radius = current_state.at("radius").get<float>();
+  current_mem.second->memory.emotion.current.V = current_state.at("v").get<float>();
+  current_mem.second->memory.emotion.current.A = current_state.at("a").get<float>();
+  current_mem.second->memory.emotion.current.D = current_state.at("d").get<float>();
+  current_mem.second->memory.emotion.current.radius = current_state.at("r").get<float>();
   current_mem.second->memory.emotion.similarity = emotion_json.value("similarity", 0.0f);
   current_mem.second->memory.emotion.emotion_terms =
       {emotion_json.value("emotion_term", std::string())};

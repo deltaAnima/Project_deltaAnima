@@ -147,6 +147,7 @@ struct FuliContextSaveRequest
 // above, just simpler here since both fields are plain strings.
 inline void from_json(const json &j, FuliContextSaveRequest &r)
 {
+  j.at("user_name").get_to(r.user_name);
   j.at("persona_name").get_to(r.persona_name);
   j.at("persona_response").get_to(r.persona_response);
 }
@@ -157,6 +158,7 @@ inline void from_json(const json &j, FuliContextSaveRequest &r)
 // redis_db_client.hpp).
 inline void to_json(json &j, const FuliContextSaveRequest &r)
 {
+  j["user_name"]        = r.user_name;
   j["persona_name"]     = r.persona_name;
   j["persona_response"] = r.persona_response;
 }

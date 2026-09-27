@@ -260,10 +260,11 @@ int main()
     "PUT /character/context_memory",
     [&orchestrator](std::string body) -> net::awaitable<std::string> 
     {
-      schemas::FuliContextSaveRequest req = 
+      schemas::FuliContextSaveRequest req =
           json::parse(body).get<schemas::FuliContextSaveRequest>();
-      
+
       co_await orchestrator.HandleContextSaveRequest(std::move(req));
+      co_return nlohmann::json{{"status", "ok"}}.dump();
     }
   );
 
