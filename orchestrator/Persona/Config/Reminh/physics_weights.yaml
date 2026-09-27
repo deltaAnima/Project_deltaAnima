@@ -1,0 +1,59 @@
+# ==========================================
+# Reminh Emotion Physics Configuration (v2)
+# ==========================================
+
+# 1. Big Five Personality Traits (OCEAN)
+# 0.0 ~ 1.0 range
+OCEAN:
+  Openness: 0.8
+  Conscientiousness: 0.7
+  Extraversion: 0.4
+  Agreeableness: 0.9
+  Neuroticism: 0.2
+
+# 2. Stress & Reward Analysis Weights
+# Used for runFullAnalysis()
+AnalysisWeights:
+  stabilityRadius: 0.15     # Radius to apply dampening_factor
+  dampening_factor: 0.5    # Reduce stress within stabilityRadius
+  weightV_stress: 0.6      # Valence weight for stress calculation
+  weightA_stress: 0.4      # Arousal weight for stress calculation
+  weightV_reward: 0.7      # Valence weight for reward calculation
+  weightA_reward: 0.3      # Arousal weight for reward calculation
+  weight_k: 5.0            # Sigmoid k-factor for lability
+  theta_0: 0.0             # Lability offset
+
+# 3. Dynamic Physics Formula Weights
+# Used for calculatePhysicsWeights()
+FormulaWeights:
+  sensitivity:
+    pos_extraversion: 0.5
+    pos_openness: 0.2
+    neg_neuroticism: 0.8
+    
+  resistance:
+    base: 0.5
+    conscientiousness: 0.4
+    openness: -0.1
+    clamp_min: 0.1
+    clamp_max: 0.9
+    
+  decay:
+    base: 0.02
+    conscientiousness: 0.05
+    neuroticism: -0.02
+    clamp_min: 0.005
+    clamp_max: 0.15
+# 4. Advanced Modulation Config
+# Real-time physics modulation based on analysis
+AdvancedConfig:
+  stress_threshold: 0.7            # Threshold for negative sensitivity boost
+  stress_sensitivity_factor: 1.2   # How much sensitivity increases when stressed
+  lability_threshold: 0.5          # Threshold for low resistance
+  lability_resistance_mult: 0.8    # Resistance multiplier during high lability
+  reward_threshold: 0.6            # Threshold for recovery boost
+  reward_decay_boost: 1.5          # Decay rate multiplier when rewarded
+  history_lookback_size: 200.0     # Lookback size for cumulative analysis (O(n))
+  dt_factor: 0.01                  # Time step factor for integration
+  expression_r: 0.4                # Neutral zone radius (if distance < r, expression is neutral)
+  epsilon: 0.000000001             # Small value to prevent division by zero

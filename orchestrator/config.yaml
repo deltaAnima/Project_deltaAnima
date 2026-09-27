@@ -1,0 +1,46 @@
+# Reminh orchestrator configuration.
+# Anything environment/deployment-specific (IPs, ports, model paths) lives
+# here so it never needs a code change to move machines.
+#
+# Secrets (API keys, bot tokens) do NOT belong here — put those in `.env`.
+# Set ORCHESTRATOR_CONFIG to point at a different file (e.g. for a second
+# machine or a test rig) instead of editing this one in place.
+
+server:
+  host: "0.0.0.0"
+  port: 8080
+
+edge:
+  # overridable at runtime via the EDGE_SERVER_URL env var
+  url: "ws://127.0.0.1:8080"
+  role: "orchestrator"
+
+servers:
+  # host:port for every microservice on the LAN. Used by Orchestrator's
+  # startup liveness sweep and by Character to know where to send
+  # RAG/embedding/rerank/STT/TTS calls later. Blank = not deployed yet /
+  # skipped by the liveness check.
+  Edge_server_ip: "127.0.0.1:8080"
+  Fuli_server_ip: "127.0.0.1:8080"
+  NV_5090_server_ip: "127.0.0.1:8080"
+  Embedding_server_ip: "127.0.0.1:8080"
+  Reranking_server_ip: "127.0.0.1:8080"
+  STT_server_ip: "127.0.0.1:8080"
+  TTS_server_ip: "127.0.0.1:8080"
+  Orchestrator_server_ip: "127.0.0.1:8080"
+
+vl_model:
+  address: "127.0.0.1"
+  port: "8080"
+  alias: "Gemma4"
+  model_full: "Gemma4-26B-A4B-Uncensored-HauhauCS-Balanced-Q4_K_M.gguf"
+  temperature: 0.8
+  max_token: 3000
+  top_p: 0.9
+
+emotion_inference:
+  # Fuli's C++ server does emotion (VAD) inference itself — this just tells
+  # it, as boolean flags, which backend to use: "openjev" | "5090"
+  backend: "5090"
+  # if backend is "openjev" and that call fails, Fuli should retry on 5090
+  fallback_to_5090: true

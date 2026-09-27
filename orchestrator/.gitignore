@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+
+# Env / secrets
+.env
+.env.*
+!.env.example
+
+# Local config overrides (ORCHESTRATOR_CONFIG points elsewhere for these)
+config.local.yaml
+*.local.yaml
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+
+# Logs / scratch
+*.log
+temp.py

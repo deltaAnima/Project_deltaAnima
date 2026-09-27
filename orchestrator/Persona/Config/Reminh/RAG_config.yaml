@@ -1,0 +1,29 @@
+# Default RAG policy for Reminh. Anything here is a static default that
+# build_order() merges with per-call values (session_id, user_id, the
+# actual dense_vector, etc.) — see Persona/RAG_schemas.py for the full
+# field reference.
+
+RAG_config:
+  target_domain: "both"           # memory | knowledge | both
+  pipeline_level: "v1_5_hybrid"   # v1_dense | v1_5_hybrid | v2_graph_aware
+  top_k: 5
+  min_score_threshold: 0.6
+
+  memory_config:
+    enable_time_decay: true
+    recency_weight: 0.3
+    importance_threshold: 0.5
+
+  knowledge_config:
+    collection_names: ["reminh_kb"]
+    hybrid_alpha: 0.7
+    max_hops: 1
+
+  fusion_config:
+    memory_weight: 0.4
+    knowledge_weight: 0.6
+    interleave_results: false
+
+  granularity: "raw_chunk"        # raw_chunk | parent_chunk | window_expanded
+  context_window_size: 1
+  enable_rerank: false
