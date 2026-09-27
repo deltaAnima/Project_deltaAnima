@@ -184,4 +184,9 @@ bool deltaEGO::reload_config()
   return ayin_->reload_config();
 }
 
+nlohmann::json deltaEGO::Check5090Health() const
+{
+  return carmen_->Check5090Health();
+}
+
 } // namespace deltaEGO

@@ -232,8 +232,9 @@ int main()
   pipeline::Orchestrator orchestrator(embedder, memory_retriever, emotion_engine);
 
   // Same reference-holding, same lifetime rule as Orchestrator above:
-  // health_checker just borrows embedder, doesn't own it.
-  health::HealthChecker health_checker(embedder);
+  // health_checker just borrows these, doesn't own them.
+  health::HealthChecker health_checker(embedder, redis_client, openjev,
+                                        emotion_engine);
 
   httpsrv::HttpServer server(ioc, config::kListenPort);
   server.RegisterRoute(

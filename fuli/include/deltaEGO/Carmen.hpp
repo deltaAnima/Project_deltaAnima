@@ -61,6 +61,16 @@ public:
                       bool fallback_to_5090 = false, bool use_5090 = true,
                       bool fallback_to_jev = false);
 
+  // Forwards to Gebura_5090's own HealthCheck() (blocking, self-contained
+  // — same pattern as EmbeddingClient::HealthCheck). openjev_ doesn't
+  // need an equivalent here: main.cpp already constructs its own
+  // standalone OpenJevClient for the smoke test, so HealthChecker talks
+  // to that one directly instead of reaching through Carmen for it.
+  // Gebura_5090 has no such standalone twin — it only exists inside
+  // Carmen — so this is the one health check that has to cross the
+  // Pimpl boundary (see deltaEGO::Check5090Health).
+  nlohmann::json Check5090Health() const { return Gebura_5090.HealthCheck(); }
+
 private:
   // OpenJev's /classify only scores ONE premise/hypothesis pair at a
   // time (see openjev_client.hpp) — it doesn't hand back a VAD triple

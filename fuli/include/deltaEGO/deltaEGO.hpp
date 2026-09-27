@@ -224,6 +224,12 @@ namespace deltaEGO {
     // Re-reads the YAML config passed to the constructor.
     bool reload_config();
 
+    // Forwards to Carmen's Check5090Health() — exposed here since Carmen
+    // is only forward-declared/opaque outside this Pimpl boundary, same
+    // reason sephirothic_tree has to be a member here instead of callers
+    // reaching into carmen_ directly.
+    nlohmann::json Check5090Health() const;
+
   private:
     std::unique_ptr<Ayin::Ayin> ayin_;
     std::unique_ptr<Carmen::Carmen> carmen_; // unused until OpenJEV integration lands

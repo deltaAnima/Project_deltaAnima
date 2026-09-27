@@ -82,7 +82,7 @@ net::awaitable<std::vector<float>> EmbeddingClient::Embed(
   // input string: [[0.01, -0.02, ...]]. Since we always send exactly one
   // input, we only ever need row 0.
   json parsed = json::parse(res.body());
-  if (!parsed.is_array() || parsed.empty()) 
+  if (!parsed.is_array() || parsed.empty())
   {
     throw std::runtime_error("unexpected /embed response shape: " +
                               res.body());

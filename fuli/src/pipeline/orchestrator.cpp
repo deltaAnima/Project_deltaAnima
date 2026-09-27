@@ -182,7 +182,13 @@ Orchestrator::HandleContextRequest(schemas::FuliContextRequest reqest)
     hit.model_response = mem.metadata.memory.content.model_response;
     resp.hits.push_back(std::move(hit));
   }
-  resp.emotion_json = std::move(emotion_json_dump);
+  // NOT a move — emotion_json_dump is read again below (assemble step,
+  // emotion_analysis.deltaEGO_analysis) — moving it here left that
+  // field permanently empty in Redis (it was always saving whatever a
+  // moved-from std::string happens to leave behind), a real bug this
+  // caught by inspecting a saved Redis row rather than something the
+  // type system could flag.
+  resp.emotion_json = emotion_json_dump;
 
   // --- [5] Assemble --------------------------------------------------------
   // Fills in current_mem.second (this user's per-turn buffer in

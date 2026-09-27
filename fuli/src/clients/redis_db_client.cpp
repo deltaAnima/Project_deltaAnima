@@ -48,7 +48,40 @@ float GetFloat(const std::map<std::string, std::string> &fields,
 int64_t GetInt64(const std::map<std::string, std::string> &fields,
                   const std::string &key, int64_t def) {
   auto it = fields.find(key);
-  return it == fields.end() ? def : std::stoll(it->second);
+  if (it == fields.end())
+    return def;
+  try
+  {
+    return std::stoll(it->second);
+  }
+  catch (const std::exception &e)
+  {
+    throw std::runtime_error("GetInt64(\"" + key + "\") on value \"" +
+                              it->second + "\": " + e.what());
+  }
+}
+
+// UserId::high/low (see pipeline/memory_retriever.hpp) are uint64_t —
+// MurmurHash3 output uses the full unsigned 64-bit range, which is
+// routinely (roughly half the time) above INT64_MAX. GetInt64's
+// std::stoll is a SIGNED parser, so it throws std::out_of_range on
+// exactly those values — this is what was actually behind the "stoll"
+// exceptions, not corrupted data. std::stoull parses the full unsigned
+// range correctly.
+uint64_t GetUInt64(const std::map<std::string, std::string> &fields,
+                    const std::string &key, uint64_t def) {
+  auto it = fields.find(key);
+  if (it == fields.end())
+    return def;
+  try
+  {
+    return std::stoull(it->second);
+  }
+  catch (const std::exception &e)
+  {
+    throw std::runtime_error("GetUInt64(\"" + key + "\") on value \"" +
+                              it->second + "\": " + e.what());
+  }
 }
 
 MemoryMetadata FieldsToMetadata(const std::map<std::string, std::string> &f) 
@@ -58,10 +91,8 @@ MemoryMetadata FieldsToMetadata(const std::map<std::string, std::string> &f)
   meta.memory.content.user_input = Get(f, "memory.content.user_input");
   meta.memory.content.model_response = Get(f, "memory.content.model_response");
 
-  meta.memory.user.user_id.high =
-      static_cast<uint64_t>(GetInt64(f, "memory.user.user_id.high", 0));
-  meta.memory.user.user_id.low =
-      static_cast<uint64_t>(GetInt64(f, "memory.user.user_id.low", 0));
+  meta.memory.user.user_id.high = GetUInt64(f, "memory.user.user_id.high", 0);
+  meta.memory.user.user_id.low = GetUInt64(f, "memory.user.user_id.low", 0);
   meta.memory.user.user_name = Get(f, "memory.user.user_name");
   meta.memory.user.user_content = Get(f, "memory.user.user_content");
 
