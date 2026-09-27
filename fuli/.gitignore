@@ -1,6 +1,6 @@
 build/
 .cache/
 .vscode/
-.data/
+data/
 .run/
 compile_commands.json
