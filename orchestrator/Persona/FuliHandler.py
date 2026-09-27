@@ -16,7 +16,7 @@ import requests
 import config
 from Persona.RAGHandler import Remembrance
 from Persona.EmotionHandler import Enigmata
-from Persona.RAG_schemas import CharacterContextResponse
+from Persona.RAG_schemas import CharacterContextResponse, ContextSaveResponse
 
 
 class FuliHandler:
@@ -40,13 +40,6 @@ class FuliHandler:
         if not self.endpoint:
             raise RuntimeError("Fuli_server_ip is not set (config.yaml -> servers)")
         response = requests.post(f"http://{self.endpoint}{path}", json=payload, timeout=self.timeout)
-        response.raise_for_status()
-        return response.json()
-
-    def _put(self, path: str, payload: Dict[str, Any]) -> Dict[str, Any]:
-        if not self.endpoint:
-            raise RuntimeError("Fuli_server_ip is not set (config.yaml -> servers)")
-        response = requests.put(f"http://{self.endpoint}{path}", json=payload, timeout=self.timeout)
         response.raise_for_status()
         return response.json()
 
@@ -117,18 +110,22 @@ class FuliHandler:
             "emotion_state": result.emotion,
         }
 
-    def save_context_memory(self, user_name: str, persona_response: str) -> None:
+    def save_context_memory(self, user_name: str, persona_response: str) -> ContextSaveResponse:
         """
         Closes out the memory buffer query_character_context() opened for
-        `user_name` (PUT /character/context_memory, schemas::FuliContextSaveRequest).
+        `user_name` (POST /character/context_memory, schemas::FuliContextSaveRequest).
         Must be called exactly once per turn — Fuli refuses the *next*
         query_character_context() for the same user_name until this runs
         ("memory buffer already exists... a previous turn's
         HandleContextSaveRequest never ran"), confirmed against the live server.
+
+        Returns the full saved-memory record Fuli reports back (the hashed
+        user_id, faiss_id, session_id, the emotion snapshot at save time, etc.)
         """
         payload = {
             "user_name": user_name,
             "persona_name": self.character,
             "persona_response": persona_response,
         }
-        self._put("/character/context_memory", payload)
+        raw_response = self._post("/character/context_memory", payload)
+        return ContextSaveResponse.model_validate(raw_response)

@@ -112,16 +112,21 @@ class Orchestrator:
             image_base64=job.image_base64,
         )
 
+        memory_payload = None
         if success:
             # Closes the memory buffer __call_Fuli__ opened for this user_name;
             # Fuli refuses their *next* request until this runs. Never let a
             # save failure swallow a response the user already got a reply to.
             try:
-                await asyncio.to_thread(
+                save_result = await asyncio.to_thread(
                     self.character.save_turn,
                     job.user_name or job.from_role,
                     text,
                 )
+                # to_client_payload() strips `query` (a verbose echo of our
+                # own Fuli request) and the hashed `user_id` — neither
+                # should ever reach the frontend.
+                memory_payload = save_result.to_client_payload()
             except Exception:
                 logger.exception("[Orchestrator] Fuli save_turn failed (request_id=%s)", job.request_id)
 
@@ -130,6 +135,7 @@ class Orchestrator:
             "status": "success" if success else "error",
             "output_text": text if success else None,
             "error": None if success else text,
+            "memory": memory_payload,
         }
         # no `to` here: the hub's routing table fixes (Orchestrator, "inference_result") -> Client,
         # so it always fans out to whichever Client(s) are connected regardless of job.from_role

@@ -176,3 +176,80 @@ class CharacterContextResponse(BaseModel):
 
     hits: List[RetrievedHit] = Field(default_factory=list)
     emotion: EmotionResult
+
+
+# --- Save Specification (what Fuli sends back from the save/close-out call) ---
+
+
+class SavedMemoryContent(BaseModel):
+    user_input: str
+    model_response: str
+
+
+class SavedMemoryEmotion(BaseModel):
+    current: EmotionCurrentState
+    emotion_terms: List[str]
+    similarity: float
+
+
+class SavedMemoryPersona(BaseModel):
+    persona_name: str
+    persona_content: str
+
+
+class SavedMemoryUserId(BaseModel):
+    """A 128-bit hashed user id, split into two 64-bit halves."""
+
+    high: int
+    low: int
+
+
+class SavedMemoryUser(BaseModel):
+    user_name: str
+    user_content: str
+    user_id: SavedMemoryUserId
+
+
+class SavedMemory(BaseModel):
+    content: SavedMemoryContent
+    emotion: SavedMemoryEmotion
+    persona: SavedMemoryPersona
+    user: SavedMemoryUser
+
+
+class SavedMemoryMetadata(BaseModel):
+    faiss_id: int
+    session_id: str
+    importance: float
+    timestamp: int
+
+
+class EmotionAnalysisWrapper(BaseModel):
+    """deltaEGO's raw read-out at save time — same shape as CharacterContextResponse.emotion."""
+
+    deltaEGO_analysis: EmotionResult
+
+
+class ContextSaveResponse(BaseModel):
+    """
+    The full body Fuli returns from POST /character/context_memory
+    (schemas::FuliContextSaveRequest in). `query` (an echo of the original
+    context request) is accepted loosely since nothing consumes its exact
+    shape yet.
+    """
+
+    memory: SavedMemory
+    metadata: SavedMemoryMetadata
+    emotion_analysis: Optional[EmotionAnalysisWrapper] = None
+    query: Optional[Dict[str, Any]] = None
+
+    def to_client_payload(self) -> Dict[str, Any]:
+        """
+        Sanitized view safe to forward to an edge Client: always drops
+        `query` (a verbose echo of our original Fuli request — config,
+        rag_policy, etc.) and `memory.user.user_id` (the hashed id) —
+        neither should ever reach the frontend.
+        """
+        data = self.model_dump(exclude={"query"})
+        data["memory"]["user"].pop("user_id", None)
+        return data

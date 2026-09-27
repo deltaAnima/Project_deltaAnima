@@ -7,6 +7,7 @@ from Persona.PromptHandler import PromptHandler
 from Persona.RAGHandler import Remembrance
 from Persona.EmotionHandler import Enigmata
 from Persona.FuliHandler import FuliHandler
+from Persona.RAG_schemas import ContextSaveResponse
 import config
 
 
@@ -87,15 +88,16 @@ class Character:
             new_session=self.__is_new_session__(user_name),
         )
 
-    def save_turn(self, user_name: str, persona_response: str) -> None:
+    def save_turn(self, user_name: str, persona_response: str) -> ContextSaveResponse:
         """
         Tells Fuli what this character actually said, closing out the
         memory buffer __call_Fuli__ opened for `user_name`. Must be
         called exactly once per turn (after the VL model produces its
         response) — Fuli refuses the next context request for the same
-        user_name until this runs.
+        user_name until this runs. Returns the full saved-memory record
+        Fuli reports back.
         """
-        self.Emanator.save_context_memory(user_name=user_name, persona_response=persona_response)
+        return self.Emanator.save_context_memory(user_name=user_name, persona_response=persona_response)
 
     def __is_new_session__(self, session_key: str) -> bool:
         """
