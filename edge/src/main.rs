@@ -1,5 +1,6 @@
 mod hub;
 mod routing;
+mod stt;
 
 use tokio::net::TcpListener;
 use tokio_tungstenite::accept_async;

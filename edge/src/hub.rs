@@ -9,6 +9,7 @@ use tokio_tungstenite::tungstenite::Message;
 use tracing::{info, warn};
 
 use crate::routing::Route;
+use crate::stt::SttClient;
 
 // ──────────────────────────────────────────────
 //  Protocol: first message must be Register
@@ -67,12 +68,21 @@ pub struct PeerHandle {
 pub struct Hub {
     /// role -> list of connected peers (supports multiple clients)
     peers: Arc<DashMap<Role, Vec<PeerHandle>>>,
+
+    /// HTTP STT backend. When set, client audio is buffered here and POSTed on
+    /// `audio_end` instead of being streamed to a WebSocket STT peer.
+    stt: Option<Arc<SttClient>>,
 }
 
 impl Hub {
     pub fn new() -> Self {
+        let stt = SttClient::from_env().map(Arc::new);
+        if stt.is_none() {
+            info!("STT_URL not set: client audio is routed to a WebSocket STT peer");
+        }
         Self {
             peers: Arc::new(DashMap::new()),
+            stt,
         }
     }
 
@@ -120,13 +130,33 @@ impl Hub {
             }
         });
 
+        // Per-connection utterance buffer (HTTP STT mode, clients only)
+        let http_stt = if role == Role::Client { self.stt.clone() } else { None };
+        let mut audio_buf: Vec<u8> = Vec::new();
+        let mut overflow_warned = false;
+
         // ── Inbound loop: WS → route ──
         while let Some(Ok(msg)) = ws_rx.next().await {
             match msg {
                 Message::Text(text) => {
+                    if let Some(stt) = &http_stt {
+                        if self.handle_audio_control(&text, stt, &mut audio_buf, &tx, &peer) {
+                            overflow_warned = false;
+                            continue;
+                        }
+                    }
                     self.handle_text_message(&text, role, &peer);
                 }
                 Message::Binary(data) => {
+                    if let Some(stt) = &http_stt {
+                        if audio_buf.len() + data.len() <= stt.max_buffer_bytes {
+                            audio_buf.extend_from_slice(&data);
+                        } else if !overflow_warned {
+                            warn!("[{peer}] Audio buffer full, dropping audio until audio_end");
+                            overflow_warned = true;
+                        }
+                        continue;
+                    }
                     self.handle_binary_message(data.to_vec(), role, &peer);
                 }
                 Message::Close(_) => break,
@@ -167,6 +197,94 @@ impl Hub {
             _ => {
                 warn!("[{peer}] Registration timeout or error");
                 None
+            }
+        }
+    }
+
+    // ──────────────────────────────────────────────
+    //  HTTP STT: audio_start / audio_end
+    // ──────────────────────────────────────────────
+
+    /// Returns true if the message was an audio control message and has been handled.
+    fn handle_audio_control(
+        &self,
+        text: &str,
+        stt: &Arc<SttClient>,
+        audio_buf: &mut Vec<u8>,
+        client_tx: &mpsc::UnboundedSender<Message>,
+        peer: &SocketAddr,
+    ) -> bool {
+        let Ok(env) = serde_json::from_str::<Envelope>(text) else {
+            return false;
+        };
+
+        match env.msg_type.as_str() {
+            "audio_start" => {
+                audio_buf.clear();
+                true
+            }
+            "audio_end" => {
+                let pcm = std::mem::take(audio_buf);
+                if pcm.is_empty() {
+                    warn!("[{peer}] audio_end with no buffered audio");
+                    return true;
+                }
+
+                let secs = pcm.len() as f32 / (stt.sample_rate as f32 * 2.0);
+                info!("[{peer}] audio_end: {secs:.2}s of audio → STT");
+
+                let hub = self.clone();
+                let stt = stt.clone();
+                let client_tx = client_tx.clone();
+                let peer = *peer;
+                tokio::spawn(async move {
+                    hub.run_stt(stt, pcm, client_tx, peer).await;
+                });
+                true
+            }
+            _ => false,
+        }
+    }
+
+    async fn run_stt(
+        &self,
+        stt: Arc<SttClient>,
+        pcm: Vec<u8>,
+        client_tx: mpsc::UnboundedSender<Message>,
+        peer: SocketAddr,
+    ) {
+        match stt.transcribe(pcm).await {
+            Ok(text) => {
+                info!("[{peer}] STT: {text:?}");
+
+                // Transcript back to the requesting client (for display)
+                let result = serde_json::json!({
+                    "type": "stt_result",
+                    "from": Role::Stt,
+                    "payload": { "text": text },
+                });
+                let _ = client_tx.send(Message::Text(result.to_string().into()));
+
+                if text.is_empty() {
+                    return;
+                }
+
+                // Hand off to the orchestrator as a normal user_input
+                let input = serde_json::json!({
+                    "type": "user_input",
+                    "from": Role::Client,
+                    "payload": { "text": text, "source": "stt" },
+                });
+                self.send_to_role(Role::Orchestrator, Message::Text(input.to_string().into()));
+            }
+            Err(e) => {
+                warn!("[{peer}] {e}");
+                let err = serde_json::json!({
+                    "type": "error",
+                    "from": Role::Stt,
+                    "payload": { "message": e },
+                });
+                let _ = client_tx.send(Message::Text(err.to_string().into()));
             }
         }
     }
