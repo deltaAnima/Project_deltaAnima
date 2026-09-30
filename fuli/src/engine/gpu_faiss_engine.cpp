@@ -4,13 +4,17 @@
 #include <condition_variable>
 #include <deque>
 #include <exception>
+#include <fstream>
 #include <functional>
+#include <memory>
 #include <mutex>
 #include <stdexcept>
 #include <thread>
 
+#include <faiss/IndexFlat.h>
 #include <faiss/gpu/GpuIndexFlat.h>
 #include <faiss/gpu/StandardGpuResources.h>
+#include <faiss/index_io.h>
 
 // See the big comment in gpu_faiss_engine.hpp for WHY everything here goes
 // through a single worker thread instead of being called directly.
@@ -48,38 +52,164 @@ public:
   }
 
   void AddVectors(const std::vector<int64_t> &ids,
-                   const std::vector<float> &flat) 
-                   {
+                   const std::vector<float> &flat)
+  {
+    // .get() (not .wait()) so a failed add — e.g. the dimension check
+    // below — actually surfaces to the caller instead of being silently
+    // swallowed; AddVectors used to just deadlock-free-block and drop
+    // the exception on the floor.
+    AsyncAddVectors(ids, flat).get();
+  }
+
+  std::future<void> AsyncAddVectors(const std::vector<int64_t> &ids,
+                                     const std::vector<float> &flat)
+  {
+    auto promise = std::make_shared<std::promise<void>>();
+    auto fut = promise->get_future();
+
     if (ids.empty())
-      return;
+    {
+      promise->set_value();
+      return fut;
+    }
     if (flat.size() != ids.size() * static_cast<size_t>(dim_))
     {
-      throw std::invalid_argument(
-          "AddVectors: flat_vectors.size() != ids.size() * dim");
+      promise->set_exception(std::make_exception_ptr(std::invalid_argument(
+          "AsyncAddVectors: flat_vectors.size() != ids.size() * dim")));
+      return fut;
     }
 
-    // AddVectors is documented as blocking (see header), so we enqueue a
-    // task that fulfills this local promise, then immediately wait() on
-    // its future right here. This is just "run this on the worker thread
-    // and don't come back until it's done" expressed with the same
-    // promise/future machinery AsyncSearch uses for the non-blocking case.
-    std::promise<void> done;
-    auto fut = done.get_future();
-    Enqueue([this, ids, flat, &done]() mutable {
-      // Faiss's GpuIndexFlat does not store ids itself ("Flat index does
-      // not require IDs as there is no storage available for them" — see
-      // the faiss header). So WE maintain the id mapping: id_map_[i] is
-      // the external memory-id for whatever vector Faiss internally calls
-      // index i. Since add() always appends, and search() returns
-      // internal indices in the same 0..N-1 space, id_map_ position i
-      // and Faiss's internal vector i always refer to the same vector as
-      // long as we only ever append (never delete/reorder).
-      id_map_.insert(id_map_.end(), ids.begin(), ids.end());
-      this->vector_index_.add(static_cast<faiss::idx_t>(ids.size()), flat.data());
-      done.set_value();
+    Enqueue([this, ids, flat, promise]() mutable {
+      try
+      {
+        // Faiss's GpuIndexFlat does not store ids itself ("Flat index
+        // does not require IDs as there is no storage available for
+        // them" — see the faiss header). So WE maintain the id mapping:
+        // id_map_[i] is the external memory-id for whatever vector
+        // Faiss internally calls index i. add() first, THEN extend
+        // id_map_ — if add() throws (bad CUDA alloc, etc.), id_map_
+        // stays in sync with what's actually in the index instead of
+        // claiming ids for vectors that were never added.
+        this->vector_index_.add(static_cast<faiss::idx_t>(ids.size()), flat.data());
+        id_map_.insert(id_map_.end(), ids.begin(), ids.end());
+        promise->set_value();
+      }
+      catch (...)
+      {
+        // Must not escape WorkerLoop (see AsyncSearch's comment on why:
+        // an uncaught exception on this thread would std::terminate the
+        // whole process). Hand it to the promise instead, so it
+        // re-throws on the CALLER's side.
+        promise->set_exception(std::current_exception());
+      }
     });
-    fut.wait(); // blocks THIS (calling) thread — see header docs on why
-                // that's fine for seeding but not for the request path.
+    return fut; // returns immediately — the actual add runs
+                // asynchronously on the worker thread.
+  }
+
+  void SaveToDisk(const std::string &path)
+  {
+    AsyncSaveToDisk(path).get(); // blocks; rethrows on failure
+  }
+
+  std::future<void> AsyncSaveToDisk(const std::string &path)
+  {
+    auto promise = std::make_shared<std::promise<void>>();
+    auto fut = promise->get_future();
+
+    Enqueue([this, path, promise]() mutable {
+      try
+      {
+        // Faiss's GPU indices don't serialize directly — copyTo() pulls
+        // the vectors back onto a plain CPU faiss::IndexFlatL2, which
+        // write_index() then knows how to serialize.
+        faiss::IndexFlatL2 cpu_index(this->dim_);
+        this->vector_index_.copyTo(&cpu_index);
+        faiss::write_index(&cpu_index, (path + ".faiss").c_str());
+
+        // id_map_ is entirely our own bookkeeping (see AsyncAddVectors's
+        // comment) — Faiss's serialization has no idea it exists, so it
+        // gets its own small binary file: an 8-byte count, then that
+        // many raw int64 ids in insertion order (i.e. still positionally
+        // aligned with the Faiss index once reloaded).
+        std::ofstream ids_out(path + ".ids", std::ios::binary | std::ios::trunc);
+        if (!ids_out)
+          throw std::runtime_error("SaveToDisk: failed to open " + path + ".ids for writing");
+
+        uint64_t count = this->id_map_.size();
+        ids_out.write(reinterpret_cast<const char *>(&count), sizeof(count));
+        ids_out.write(reinterpret_cast<const char *>(this->id_map_.data()),
+                       static_cast<std::streamsize>(count * sizeof(int64_t)));
+        if (!ids_out)
+          throw std::runtime_error("SaveToDisk: write failed for " + path + ".ids");
+
+        promise->set_value();
+      }
+      catch (...)
+      {
+        promise->set_exception(std::current_exception());
+      }
+    });
+    return fut; // returns immediately — the actual save runs
+                // asynchronously on the worker thread.
+  }
+
+  bool LoadFromDisk(const std::string &path)
+  {
+    // Read the .ids file first — pure I/O, no Faiss/GPU state touched,
+    // so a missing/corrupt file is a cheap early exit that never has to
+    // involve the worker thread at all.
+    std::ifstream ids_in(path + ".ids", std::ios::binary);
+    if (!ids_in)
+      return false;
+
+    uint64_t count = 0;
+    ids_in.read(reinterpret_cast<char *>(&count), sizeof(count));
+    if (!ids_in)
+      return false;
+
+    std::vector<int64_t> loaded_ids(count);
+    ids_in.read(reinterpret_cast<char *>(loaded_ids.data()),
+                static_cast<std::streamsize>(count * sizeof(int64_t)));
+    if (!ids_in)
+      return false; // truncated file
+
+    auto promise = std::make_shared<std::promise<bool>>();
+    auto fut = promise->get_future();
+
+    Enqueue([this, path, loaded_ids = std::move(loaded_ids), promise]() mutable {
+      try
+      {
+        std::unique_ptr<faiss::Index> cpu_index(
+            faiss::read_index((path + ".faiss").c_str()));
+
+        auto *cpu_flat = dynamic_cast<faiss::IndexFlatL2 *>(cpu_index.get());
+        bool dim_matches = cpu_flat && cpu_flat->d == this->dim_;
+        bool count_matches =
+            cpu_flat && static_cast<size_t>(cpu_flat->ntotal) == loaded_ids.size();
+
+        if (!dim_matches || !count_matches)
+        {
+          // Deliberately not an exception — a dimension/count mismatch
+          // means "this file doesn't match this engine's config", which
+          // is a normal, expected-to-happen condition (e.g. someone
+          // pointed LoadFromDisk at a save from a different embedding
+          // model), not a bug to crash over.
+          promise->set_value(false);
+          return;
+        }
+
+        this->vector_index_.reset(); // clear whatever's currently loaded
+        this->vector_index_.copyFrom(cpu_flat);
+        this->id_map_ = std::move(loaded_ids);
+        promise->set_value(true);
+      }
+      catch (...)
+      {
+        promise->set_exception(std::current_exception());
+      }
+    });
+    return fut.get(); // blocks; rethrows on failure, returns false on mismatch
   }
 
   size_t Size() const { return id_map_.size(); }
@@ -203,6 +333,24 @@ GpuFaissEngine::~GpuFaissEngine() = default; // defined here (not inline in
 void GpuFaissEngine::AddVectors(const std::vector<int64_t> &ids,
                                  const std::vector<float> &flat_vectors) {
   impl_->AddVectors(ids, flat_vectors);
+}
+
+std::future<void>
+GpuFaissEngine::AsyncAddVectors(const std::vector<int64_t> &ids,
+                                 const std::vector<float> &flat_vectors) {
+  return impl_->AsyncAddVectors(ids, flat_vectors);
+}
+
+void GpuFaissEngine::SaveToDisk(const std::string &path) {
+  impl_->SaveToDisk(path);
+}
+
+std::future<void> GpuFaissEngine::AsyncSaveToDisk(const std::string &path) {
+  return impl_->AsyncSaveToDisk(path);
+}
+
+bool GpuFaissEngine::LoadFromDisk(const std::string &path) {
+  return impl_->LoadFromDisk(path);
 }
 
 size_t GpuFaissEngine::Size() const { return impl_->Size(); }

@@ -1,10 +1,12 @@
-#include "clients/embedding_client.hpp"
+#include "clients/openjev_client.hpp"
 
 #include <boost/asio/connect.hpp>
 #include <boost/asio/ip/tcp.hpp>
 #include <boost/asio/use_awaitable.hpp>
 #include <boost/beast/core.hpp>
 #include <boost/beast/http.hpp>
+#include <algorithm>
+#include <cmath>
 #include <stdexcept>
 
 #include "Third_Party/json.hpp"
@@ -17,8 +19,41 @@ namespace net = boost::asio;    // the actual async I/O + coroutine machinery
 using tcp = net::ip::tcp;
 using json = nlohmann::json;
 
-EmbeddingClient::EmbeddingClient(net::io_context &ioc, std::string host,
-                                  std::string port)
+namespace {
+
+// OpenJev returns raw logits under "embedding" in the order
+// [contradiction, entailment, neutral]; normalize with a numerically
+// stable softmax (subtract max before exponentiating).
+OpenJevScores Softmax(const std::vector<double> &logits) 
+{
+  if (logits.size() != 3) 
+  {
+    throw std::runtime_error(
+        "OpenJevClient: expected 3 logits, got " +
+        std::to_string(logits.size()));
+  }
+
+  double max_logit = *std::max_element(logits.begin(), logits.end());
+
+  double exps[3];
+  double sum = 0.0;
+  for (int i = 0; i < 3; ++i) 
+  {
+    exps[i] = std::exp(logits[i] - max_logit);
+    sum += exps[i];
+  }
+
+  OpenJevScores scores;
+  scores.contradiction = exps[0] / sum;
+  scores.entailment = exps[1] / sum;
+  scores.neutral = exps[2] / sum;
+  return scores;
+}
+
+} // namespace
+
+OpenJevClient::OpenJevClient(net::io_context &ioc, std::string host,
+                              std::string port)
     : ioc_(ioc), host_(std::move(host)), port_(std::move(port)) {}
 
 // net::awaitable<T> is C++20 coroutine sugar: this function's body can use
@@ -27,13 +62,12 @@ EmbeddingClient::EmbeddingClient(net::io_context &ioc, std::string host,
 // line below just recovers "which io_context/strand am I currently
 // running on", which every asio async_* call needs to know where to post
 // its completion handler.
-net::awaitable<std::vector<float>> EmbeddingClient::Embed(
-    std::string text) const {
+net::awaitable<OpenJevScores> OpenJevClient::Classify(
+    std::string premise, std::string hypothesis) const {
   auto executor = co_await net::this_coro::executor;
 
-  // resolver: turns "127.0.0.1"/"8080" into actual connectable endpoints
-  // (mostly a no-op for an IP literal like this, but would do real DNS
-  // lookup for a hostname).
+  // resolver: turns host/port into actual connectable endpoints (mostly a
+  // no-op for an IP literal, but would do real DNS lookup for a hostname).
   tcp::resolver resolver(executor);
   // tcp_stream: beast's wrapper around a plain asio TCP socket, adding
   // timeout support and the async_* overloads beast::http functions need.
@@ -43,15 +77,14 @@ net::awaitable<std::vector<float>> EmbeddingClient::Embed(
       co_await resolver.async_resolve(this->host_, this->port_, net::use_awaitable);
   co_await stream.async_connect(endpoints, net::use_awaitable);
 
-  // TEI's /embed accepts {"inputs": "<text>"} for a single string (it
-  // also accepts an array of strings for batching, unused here).
-  // normalize=true asks TEI to L2-normalize the embedding server-side —
-  // we want that because GpuFaissEngine uses plain L2 distance
-  // (GpuIndexFlatL2), and L2 distance between normalized vectors ranks
-  // results the same way cosine similarity would.
-  json body{{"inputs", text}, {"normalize", true}};
+  // OpenJev's /classify expects {"text": "Premise: <p>\nHypothesis: <h>"}
+  // and responds with raw logits under "embedding" (same field name as
+  // the TEI /embed route, despite this being a classification result).
+  std::string text =
+      "Premise: " + premise + "\nHypothesis: " + hypothesis;
+  json body{{"text", text}};
 
-  http::request<http::string_body> req{http::verb::post, "/embed", 11};
+  http::request<http::string_body> req{http::verb::put, "/classify", 11};
   req.set(http::field::host, this->host_);
   req.set(http::field::user_agent, "fuli-orchestrator");
   req.set(http::field::content_type, "application/json");
@@ -73,30 +106,28 @@ net::awaitable<std::vector<float>> EmbeddingClient::Embed(
 
   if (res.result() != http::status::ok) 
   {
-    throw std::runtime_error("embedding request failed: HTTP " +
+    throw std::runtime_error("classify request failed: HTTP " +
                               std::to_string(res.result_int()) + " " +
                               res.body());
   }
 
-  // TEI's native /embed returns a JSON array of embeddings, one row per
-  // input string: [[0.01, -0.02, ...]]. Since we always send exactly one
-  // input, we only ever need row 0.
   json parsed = json::parse(res.body());
-  if (!parsed.is_array() || parsed.empty())
+  if (!parsed.contains("embedding") || !parsed.at("embedding").is_array()) 
   {
-    throw std::runtime_error("unexpected /embed response shape: " +
+    throw std::runtime_error("unexpected /classify response shape: " +
                               res.body());
   }
-  co_return parsed.at(0).get<std::vector<float>>();
+
+  co_return Softmax(parsed.at("embedding").get<std::vector<double>>());
 }
 
-nlohmann::json EmbeddingClient::HealthCheck() const 
+nlohmann::json OpenJevClient::HealthCheck() const 
 {
   if(this->port_.empty() || this->host_.empty())
   {
     return nlohmann::json{
       {"status", "error"},
-      {"message", "Class EmbeddingClient -> host or port is empty"}
+      {"message", "Class OpenJevClient -> host or port is empty"}
     };
   }
 
@@ -138,7 +169,7 @@ nlohmann::json EmbeddingClient::HealthCheck() const
     {
       return nlohmann::json{
         {"status", "unhealthy"},
-        {"message", "Class EmbeddingClient -> Failed to connect: " + connect_ec.message()}
+        {"message", "Class OpenJevClient -> Failed to connect: " + connect_ec.message()}
       };
     }
 
@@ -149,14 +180,14 @@ nlohmann::json EmbeddingClient::HealthCheck() const
 
     return nlohmann::json{
       {"status", "healthy"},
-      {"message", "Class EmbeddingClient -> Can connect to host and port.\n"}
+      {"message", "Class OpenJevClient -> Can connect to host and port.\n"}
     };
   }
   catch (const std::exception& e)
   {
     return nlohmann::json{
       {"status", "error"},
-      {"message", "Class EmbeddingClient -> Exception during health check: " + std::string(e.what())}
+      {"message", "Class OpenJevClient -> Exception during health check: " + std::string(e.what())}
     };
   }
 }

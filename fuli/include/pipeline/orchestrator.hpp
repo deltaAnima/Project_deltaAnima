@@ -1,11 +1,14 @@
 #pragma once
 
 #include <boost/asio/awaitable.hpp>
+#include <functional>
+#include <unordered_map>
 
 #include "clients/embedding_client.hpp"
 #include "deltaEGO/deltaEGO.hpp"
-#include "engine/vector_search_engine.hpp"
+#include "pipeline/memory_retriever.hpp"
 #include "schemas/fuli_schemas.hpp"
+#include "clients/redis_db_client.hpp"
 
 namespace pipeline {
 
@@ -18,7 +21,8 @@ namespace pipeline {
 //   [1] (done in main.cpp / http_server.cpp) parse the incoming JSON
 //   [2] embed user_input via TEI, unless the caller already supplied
 //       dense_vector
-//   [3] Faiss GPU search for the top_k nearest memory vectors
+//   [3] MemoryRetriever: Faiss search + Redis metadata join, filtered by
+//       memory_config (session_id, importance_threshold)
 //   [4-A] emotion: currently a NEUTRAL (0,0,0) stimulus — the real
 //         text -> VAD step (calling the OpenJEV inference server) is
 //         deliberately deferred, see HandleContextRequest's comments
@@ -34,14 +38,15 @@ namespace pipeline {
 // against. Once OpenJEV is wired in as an actual network call, revisit
 // this class to fork the two branches for real (see AwaitSearch in the
 // .cpp for the kind of bridging that will be needed).
-class Orchestrator {
+class Orchestrator 
+{
 public:
   // None of these are owned by Orchestrator — main.cpp constructs them
   // all and must keep them alive for at least as long as this object
   // (and for as long as any in-flight request coroutine holding a
   // reference to it is still running).
   Orchestrator(clients::EmbeddingClient &embedder,
-               IVectorSearchEngine &search_engine,
+               MemoryRetriever &memory_retriever,
                deltaEGO::deltaEGO &emotion_engine);
 
   // The single entry point http_server.cpp's route handler calls. Takes
@@ -49,11 +54,14 @@ public:
   // moved-in json blob) and returns a fully-assembled response.
   boost::asio::awaitable<schemas::FuliContextResponse>
   HandleContextRequest(schemas::FuliContextRequest req);
+  boost::asio::awaitable<nlohmann::json>
+  HandleContextSaveRequest(schemas::FuliContextSaveRequest req);
 
 private:
   clients::EmbeddingClient &embedder_;
-  IVectorSearchEngine &search_engine_;
+  MemoryRetriever &memory_retriever_;
   deltaEGO::deltaEGO &emotion_engine_;
+
 };
 
 } // namespace pipeline

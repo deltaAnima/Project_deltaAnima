@@ -48,17 +48,51 @@ float GetFloat(const std::map<std::string, std::string> &fields,
 int64_t GetInt64(const std::map<std::string, std::string> &fields,
                   const std::string &key, int64_t def) {
   auto it = fields.find(key);
-  return it == fields.end() ? def : std::stoll(it->second);
+  if (it == fields.end())
+    return def;
+  try
+  {
+    return std::stoll(it->second);
+  }
+  catch (const std::exception &e)
+  {
+    throw std::runtime_error("GetInt64(\"" + key + "\") on value \"" +
+                              it->second + "\": " + e.what());
+  }
 }
 
-MemoryMetadata FieldsToMetadata(const std::map<std::string, std::string> &f) {
+// UserId::high/low (see pipeline/memory_retriever.hpp) are uint64_t —
+// MurmurHash3 output uses the full unsigned 64-bit range, which is
+// routinely (roughly half the time) above INT64_MAX. GetInt64's
+// std::stoll is a SIGNED parser, so it throws std::out_of_range on
+// exactly those values — this is what was actually behind the "stoll"
+// exceptions, not corrupted data. std::stoull parses the full unsigned
+// range correctly.
+uint64_t GetUInt64(const std::map<std::string, std::string> &fields,
+                    const std::string &key, uint64_t def) {
+  auto it = fields.find(key);
+  if (it == fields.end())
+    return def;
+  try
+  {
+    return std::stoull(it->second);
+  }
+  catch (const std::exception &e)
+  {
+    throw std::runtime_error("GetUInt64(\"" + key + "\") on value \"" +
+                              it->second + "\": " + e.what());
+  }
+}
+
+MemoryMetadata FieldsToMetadata(const std::map<std::string, std::string> &f) 
+{
   MemoryMetadata meta;
 
   meta.memory.content.user_input = Get(f, "memory.content.user_input");
   meta.memory.content.model_response = Get(f, "memory.content.model_response");
 
-  meta.memory.user.user_id =
-      static_cast<int>(GetInt64(f, "memory.user.user_id", 0));
+  meta.memory.user.user_id.high = GetUInt64(f, "memory.user.user_id.high", 0);
+  meta.memory.user.user_id.low = GetUInt64(f, "memory.user.user_id.low", 0);
   meta.memory.user.user_name = Get(f, "memory.user.user_name");
   meta.memory.user.user_content = Get(f, "memory.user.user_content");
 
@@ -73,26 +107,38 @@ MemoryMetadata FieldsToMetadata(const std::map<std::string, std::string> &f) {
   // nlohmann::json).
   std::string terms_json = Get(f, "memory.emotion.emotion_terms", "[]");
   json parsed_terms = json::parse(terms_json, nullptr, /*allow_exceptions=*/false);
+
   if (!parsed_terms.is_discarded() && parsed_terms.is_array())
     meta.memory.emotion.emotion_terms =
         parsed_terms.get<std::vector<std::string>>();
-  meta.memory.emotion.intensity = GetFloat(f, "memory.emotion.intensity", 0.0f);
+
+  meta.memory.emotion.current.V = GetFloat(f, "memory.emotion.current.V", 0.0f);
+  meta.memory.emotion.current.A = GetFloat(f, "memory.emotion.current.A", 0.0f);
+  meta.memory.emotion.current.D = GetFloat(f, "memory.emotion.current.D", 0.0f);
+  meta.memory.emotion.current.radius = GetFloat(f, "memory.emotion.current.radius", 0.0f);
+  meta.memory.emotion.similarity = GetFloat(f, "memory.emotion.similarity", 0.0f);
 
   meta.emotion_analysis.deltaEGO_analysis = Get(f, "emotion_analysis.deltaEGO_analysis", "{}");
 
   std::string session_id = Get(f, "metadata.session_id");
+
   if (!session_id.empty())
     meta.metadata.session_id = session_id;
+
   meta.metadata.importance = GetFloat(f, "metadata.importance", 0.5f);
   meta.metadata.timestamp = GetInt64(f, "metadata.timestamp", 0);
   meta.metadata.faiss_id = GetInt64(f, "metadata.faiss_id", 0);
 
   std::string request_json = Get(f, "query.request_query", "{}");
   json parsed_request = json::parse(request_json, nullptr, /*allow_exceptions=*/false);
-  if (!parsed_request.is_discarded()) {
-    try {
+  if (!parsed_request.is_discarded()) 
+  {
+    try 
+    {
       meta.query.request_query = parsed_request.get<schemas::FuliContextRequest>();
-    } catch (...) {
+    } 
+    catch (...) 
+    {
       // Leave query.request_query default-constructed if it doesn't
       // parse — a malformed/missing stored request shouldn't fail the
       // whole GetMemoryMetadata call.
@@ -102,23 +148,29 @@ MemoryMetadata FieldsToMetadata(const std::map<std::string, std::string> &f) {
   return meta;
 }
 
-std::map<std::string, std::string> MetadataToFields(const MemoryMetadata &meta) {
+std::map<std::string, std::string> MetadataToFields(const MemoryMetadata* meta) 
+{
   return {
-      {"memory.content.user_input", meta.memory.content.user_input},
-      {"memory.content.model_response", meta.memory.content.model_response},
-      {"memory.user.user_id", std::to_string(meta.memory.user.user_id)},
-      {"memory.user.user_name", meta.memory.user.user_name},
-      {"memory.user.user_content", meta.memory.user.user_content},
-      {"memory.persona.persona_name", meta.memory.persona.persona_name},
-      {"memory.persona.persona_content", meta.memory.persona.persona_content},
-      {"memory.emotion.emotion_terms", json(meta.memory.emotion.emotion_terms).dump()},
-      {"memory.emotion.intensity", std::to_string(meta.memory.emotion.intensity)},
-      {"emotion_analysis.deltaEGO_analysis", meta.emotion_analysis.deltaEGO_analysis},
-      {"metadata.session_id", meta.metadata.session_id.value_or("")},
-      {"metadata.importance", std::to_string(meta.metadata.importance)},
-      {"metadata.timestamp", std::to_string(meta.metadata.timestamp)},
-      {"metadata.faiss_id", std::to_string(meta.metadata.faiss_id)},
-      {"query.request_query", json(meta.query.request_query).dump()},
+      {"memory.content.user_input", meta->memory.content.user_input},
+      {"memory.content.model_response", meta->memory.content.model_response},
+      {"memory.user.user_id.high", std::to_string(meta->memory.user.user_id.high)},
+      {"memory.user.user_id.low", std::to_string(meta->memory.user.user_id.low)},
+      {"memory.user.user_name", meta->memory.user.user_name},
+      {"memory.user.user_content", meta->memory.user.user_content},
+      {"memory.persona.persona_name", meta->memory.persona.persona_name},
+      {"memory.persona.persona_content", meta->memory.persona.persona_content},
+      {"memory.emotion.emotion_terms", json(meta->memory.emotion.emotion_terms).dump()},
+      {"memory.emotion.current.V", std::to_string(meta->memory.emotion.current.V)},
+      {"memory.emotion.current.A", std::to_string(meta->memory.emotion.current.A)},
+      {"memory.emotion.current.D", std::to_string(meta->memory.emotion.current.D)},
+      {"memory.emotion.current.radius", std::to_string(meta->memory.emotion.current.radius)},
+      {"memory.emotion.similarity", std::to_string(meta->memory.emotion.similarity)},
+      {"emotion_analysis.deltaEGO_analysis", meta->emotion_analysis.deltaEGO_analysis},
+      {"metadata.session_id", meta->metadata.session_id.value_or("")},
+      {"metadata.importance", std::to_string(meta->metadata.importance)},
+      {"metadata.timestamp", std::to_string(meta->metadata.timestamp)},
+      {"metadata.faiss_id", std::to_string(meta->metadata.faiss_id)},
+      {"query.request_query", json(meta->query.request_query).dump()},
   };
 }
 
@@ -136,7 +188,8 @@ RedisDbClient::RedisDbClient(net::io_context &ioc, std::string host,
 // which <boost/redis/connection.hpp> only provides here.
 RedisDbClient::~RedisDbClient() = default;
 
-void RedisDbClient::Run() {
+void RedisDbClient::Run() 
+{
   redis::config cfg;
   cfg.addr.host = host_;
   cfg.addr.port = port_;
@@ -150,7 +203,8 @@ void RedisDbClient::Run() {
 }
 
 net::awaitable<std::optional<MemoryMetadata>>
-RedisDbClient::GetMemoryMetadata(int64_t faiss_id) {
+RedisDbClient::GetMemoryMetadata(int64_t faiss_id)
+{
   redis::request req;
   req.push("HGETALL", MemKey(faiss_id));
 
@@ -165,20 +219,35 @@ RedisDbClient::GetMemoryMetadata(int64_t faiss_id) {
 }
 
 net::awaitable<void>
-RedisDbClient::SetMemoryMetadata(int64_t faiss_id, const MemoryMetadata &meta) {
+RedisDbClient::SetMemoryMetadata(int64_t faiss_id, const MemoryMetadata* meta)
+{
   redis::request req;
   req.push_range("HSET", MemKey(faiss_id), MetadataToFields(meta));
 
   co_await conn_->async_exec(req, redis::ignore, net::use_awaitable);
 }
 
-nlohmann::json RedisDbClient::HealthCheck() const {
-  if (host_.empty() || port_.empty()) {
+net::awaitable<int64_t> RedisDbClient::NextId()
+{
+  redis::request req;
+  req.push("INCR", "next_mem_id");
+
+  redis::response<int64_t> resp;
+  co_await conn_->async_exec(req, resp, net::use_awaitable);
+
+  co_return std::get<0>(resp).value();
+}
+
+nlohmann::json RedisDbClient::HealthCheck() const
+{
+  if (host_.empty() || port_.empty()) 
+  {
     return {{"status", "error"},
             {"message", "Class RedisDbClient -> host or port is empty"}};
   }
 
-  try {
+  try 
+  {
     // Throwaway io_context + connection, entirely separate from ioc_/
     // conn_ — same "self-contained blocking check" shape as
     // EmbeddingClient::HealthCheck, so HealthChecker::CheckAll can
@@ -201,15 +270,18 @@ nlohmann::json RedisDbClient::HealthCheck() const {
 
     net::steady_timer timer(local_ioc);
     timer.expires_after(std::chrono::seconds(5));
-    timer.async_wait([&](boost::system::error_code ec) {
-      if (!ec) {
+    timer.async_wait([&](boost::system::error_code ec) 
+    {
+      if (!ec) 
+      {
         timed_out = true;
         local_conn->cancel(); // unstick everything below if PING hangs
       }
     });
 
     local_conn->async_exec(
-        req, resp, [&](boost::system::error_code ec, std::size_t) {
+        req, resp, [&](boost::system::error_code ec, std::size_t) 
+        {
           exec_ec = ec;
           timer.cancel();
           local_conn->cancel(); // stop async_run so local_ioc.run() can return
@@ -217,11 +289,13 @@ nlohmann::json RedisDbClient::HealthCheck() const {
 
     local_ioc.run();
 
-    if (timed_out) {
+    if (timed_out) 
+    {
       return {{"status", "unhealthy"},
               {"message", "Class RedisDbClient -> PING timed out"}};
     }
-    if (exec_ec) {
+    if (exec_ec) 
+    {
       return {{"status", "unhealthy"},
               {"message", "Class RedisDbClient -> " + exec_ec.message()}};
     }
@@ -229,7 +303,9 @@ nlohmann::json RedisDbClient::HealthCheck() const {
     return {{"status", "healthy"},
             {"message", "Class RedisDbClient -> PING ok: " +
                             std::get<0>(resp).value()}};
-  } catch (const std::exception &e) {
+  } 
+  catch (const std::exception &e) 
+  {
     return {{"status", "error"},
             {"message", std::string(
                             "Class RedisDbClient -> Exception during health "

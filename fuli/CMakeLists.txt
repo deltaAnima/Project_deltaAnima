@@ -84,8 +84,11 @@ add_custom_command(
 set(COMMON_SOURCES
     src/main.cpp
     src/pipeline/orchestrator.cpp
+    src/pipeline/memory_retriever.cpp
     src/clients/redis_db_client.cpp
     src/clients/embedding_client.cpp
+    src/clients/openjev_client.cpp
+    src/clients/llama_5090_client.cpp
     src/http/http_server.cpp
     src/deltaEGO/deltaEGO.cpp
     src/deltaEGO/Ayin.cpp
@@ -121,6 +124,7 @@ target_link_libraries(orchestrator_server PRIVATE
     protobuf::libprotobuf
     Threads::Threads
     yaml-cpp::yaml-cpp
+    dl
 )
 
 if(ENABLE_GPU)

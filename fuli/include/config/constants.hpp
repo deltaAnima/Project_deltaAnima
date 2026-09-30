@@ -20,6 +20,23 @@ inline constexpr int kEmbeddingDim = 1024;
 inline constexpr const char *kEmbeddingHost = "127.0.0.1";
 inline constexpr const char *kEmbeddingPort = "8080";
 
+// Where RedisDbClient connects for memory metadata. Same caveat as
+// kEmbeddingHost: if orchestrator_server doesn't run on the same host as
+// this Redis instance, change this to that host's real address.
+inline constexpr const char *kRedisHost = "127.0.0.1";
+inline constexpr const char *kRedisPort = "8080";
+
+// The 5090 machine's llama.cpp server — Llama5090Client's fallback VAD
+// estimator (see emotion_policy.use_5090/fallback_to_5090). Different
+// physical host from everything else here, unlike kRedisHost.
+inline constexpr const char *kLlama5090Host = "127.0.0.1";
+inline constexpr const char *kLlama5090Port = "8080";
+
+// Where the OpenJev NLI classifier lives — Carmen's primary VAD
+// estimator, with the 5090 machine (kLlama5090Host) as its fallback.
+inline constexpr const char *kOpenJevHost = "127.0.0.1";
+inline constexpr const char *kOpenJevPort = "8080";
+
 // The port THIS server (orchestrator_server) listens on for the
 // /character/context endpoint that FuliHandler (the Python side) calls.
 inline constexpr unsigned short kListenPort = 8080;
@@ -31,5 +48,16 @@ inline constexpr unsigned short kListenPort = 8080;
 inline constexpr const char *kDeltaEgoConfigPath =
     "config/deltaEGO_default.yaml";
 inline constexpr const char *kVadDbPath = "include/VAD_DB/VAD.json";
+
+// Where GpuFaissEngine's index gets saved/loaded (see
+// GpuFaissEngine::SaveToDisk — this becomes "{kFaissIndexPath}.faiss" and
+// "{kFaissIndexPath}.ids"). The containing directory is created at
+// startup if it doesn't exist yet.
+inline constexpr const char *kFaissIndexPath = "data/memory_index";
+
+// How often main()'s autosave loop calls AsyncSaveToDisk while the
+// server is running — a safety net for anything short of a graceful
+// shutdown (which saves unconditionally via the SIGINT/SIGTERM handler).
+inline constexpr int kAutosaveIntervalSeconds = 300; // 5 minutes
 
 } // namespace config

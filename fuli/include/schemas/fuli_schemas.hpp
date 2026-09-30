@@ -29,6 +29,13 @@ struct FuliContextRequest {
   std::string user_input;
   std::optional<std::string> context; // free-form extra context, may be null
 
+  // Session identity/lifetime is owned by MemoryRetriever (see
+  // GetOrCreateSessionId), not by the caller — this is the one signal
+  // Python has over it: true forces a fresh session id for user_name
+  // instead of reusing whatever's on file, e.g. when Python knows this
+  // is the start of a new conversation rather than a continuation.
+  bool new_session = false;
+
   RAGQueryOrder rag_policy; // parsed from config.rag_policy
 
   // config.emotion_policy (OCEAN traits, physics weights, backend_flags
@@ -52,6 +59,7 @@ inline void from_json(const json &j, FuliContextRequest &r) {
   j.at("user_input").get_to(r.user_input);
   if (j.contains("context") && !j.at("context").is_null())
     r.context = j.at("context").get<std::string>();
+  r.new_session = j.value("new_session", false);
 
   const auto &cfg = j.at("config");
   r.rag_policy = cfg.at("rag_policy").get<RAGQueryOrder>();
@@ -66,6 +74,7 @@ inline void to_json(json &j, const FuliContextRequest &r) {
       {"user_name", r.user_name},
       {"user_input", r.user_input},
       {"context", r.context ? json(*r.context) : json(nullptr)},
+      {"new_session", r.new_session},
       {"config",
        {
            {"rag_policy", r.rag_policy},
@@ -77,9 +86,15 @@ inline void to_json(json &j, const FuliContextRequest &r) {
 // One retrieved memory/knowledge chunk. `score` is currently the raw
 // Faiss L2 distance (lower = more similar), NOT a normalized similarity
 // score and NOT re-ranked — see Orchestrator::HandleContextRequest.
+// user_input/model_response come from Redis (see
+// pipeline::MemoryRetriever + clients::MemoryMetadata::Memory::Content)
+// — without them a hit is just an opaque id+score, useless to whatever
+// reads this response.
 struct MemoryHit {
   int64_t id = 0;
   float score = 0.0f;
+  std::string user_input;
+  std::string model_response;
 };
 
 struct FuliContextResponse {
@@ -96,10 +111,14 @@ struct FuliContextResponse {
 
 // to_json is the mirror of from_json: nlohmann calls this automatically
 // when you do `json(some_response)` or `j = some_response`.
-inline void to_json(json &j, const FuliContextResponse &r) {
+inline void to_json(json &j, const FuliContextResponse &r) 
+{
   j["hits"] = json::array();
   for (const auto &h : r.hits) {
-    j["hits"].push_back({{"id", h.id}, {"score", h.score}});
+    j["hits"].push_back({{"id", h.id},
+                          {"score", h.score},
+                          {"user_input", h.user_input},
+                          {"model_response", h.model_response}});
   }
 
   // allow_exceptions=false makes json::parse return a "discarded" value
@@ -108,6 +127,40 @@ inline void to_json(json &j, const FuliContextResponse &r) {
   j["emotion"] = json::parse(r.emotion_json, nullptr, /*allow_exceptions=*/false);
   if (j["emotion"].is_discarded())
     j["emotion"] = json::object();
+}
+
+// Body for the (future) write-side endpoint — see the project discussion
+// on why /character/context can't auto-save memories itself: it only
+// ever sees user_input, never the model's reply, since that gets
+// generated in Python AFTER this server responds. This is what the
+// Python side posts back once it has persona_response, so the turn can
+// actually be embedded + written via MemoryRetriever::Store.
+struct FuliContextSaveRequest
+{
+  std::string user_name;
+  std::string persona_name;
+  std::string persona_response;
+};
+
+// Parses what Python sends. Required fields use .get_to() (throws if
+// missing) — same defensive convention as FuliContextRequest::from_json
+// above, just simpler here since both fields are plain strings.
+inline void from_json(const json &j, FuliContextSaveRequest &r)
+{
+  j.at("user_name").get_to(r.user_name);
+  j.at("persona_name").get_to(r.persona_name);
+  j.at("persona_response").get_to(r.persona_response);
+}
+
+// Mirror of from_json — mainly so this struct can round-trip if it ever
+// gets embedded elsewhere for storage, the same reason
+// FuliContextRequest has one (see MemoryMetadata::Query in
+// redis_db_client.hpp).
+inline void to_json(json &j, const FuliContextSaveRequest &r)
+{
+  j["user_name"]        = r.user_name;
+  j["persona_name"]     = r.persona_name;
+  j["persona_response"] = r.persona_response;
 }
 
 } // namespace schemas
