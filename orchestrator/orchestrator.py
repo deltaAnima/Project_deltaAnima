@@ -143,4 +143,4 @@ class Orchestrator:
 
         if success:
             # likewise fixed by the hub: (Orchestrator, "tts_request") -> Tts
-            await self.edge.send_routed("tts_request", {"request_id": job.request_id, "text": text})
+            await self.edge.send_routed("tts_request", {"request_id": job.request_id, "text": text, "speaker" : "reminh"})  #TODO: need to be fixed.

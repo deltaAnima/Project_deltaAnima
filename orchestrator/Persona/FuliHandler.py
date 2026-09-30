@@ -40,7 +40,11 @@ class FuliHandler:
         if not self.endpoint:
             raise RuntimeError("Fuli_server_ip is not set (config.yaml -> servers)")
         response = requests.post(f"http://{self.endpoint}{path}", json=payload, timeout=self.timeout)
-        response.raise_for_status()
+        try:
+            response.raise_for_status()
+        except requests.exceptions.HTTPError as e:
+            print(f"[-] FULI Status {response.status_code}: {response.text}")
+            raise e
         return response.json()
 
     def _default_rag_policy(self) -> Dict[str, Any]:

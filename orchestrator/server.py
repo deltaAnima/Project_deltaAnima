@@ -126,6 +126,10 @@ async def on_edge_message(data):
 
     msg_type = data.get("type", "")
     payload = data.get("payload", {}) or {}
+    
+    #temp
+    print(payload)
+    print(payload.get("text"))
 
     if msg_type in ("user_input", "stt_result"):
         job = InferenceJob(
