@@ -1,0 +1,51 @@
+# Default OCEAN/physics weights for deltaEGO, loaded at server startup.
+# Values match main_orch_files/http_request_format.json's emotion_policy
+# example so the MVP behaves the same as that reference payload until
+# per-character request-time overrides are wired in.
+
+OCEAN:
+  Openness: 0.8
+  Conscientiousness: 0.7
+  Extraversion: 0.4
+  Agreeableness: 0.9
+  Neuroticism: 0.2
+
+AnalysisWeights:
+  stabilityRadius: 0.15
+  dampening_factor: 0.5
+  weightV_stress: 0.6
+  weightA_stress: 0.4
+  weightV_reward: 0.7
+  weightA_reward: 0.3
+  weight_k: 5.0
+  theta_0: 0.0
+
+FormulaWeights:
+  sensitivity:
+    pos_extraversion: 0.5
+    pos_openness: 0.2
+    neg_neuroticism: 0.8
+  resistance:
+    base: 0.5
+    conscientiousness: 0.4
+    openness: -0.1
+    clamp_min: 0.1
+    clamp_max: 0.9
+  decay:
+    base: 0.02
+    conscientiousness: 0.05
+    neuroticism: -0.02
+    clamp_min: 0.005
+    clamp_max: 0.15
+
+AdvancedConfig:
+  stress_threshold: 0.7
+  stress_sensitivity_factor: 1.2
+  lability_threshold: 0.5
+  lability_resistance_mult: 0.8
+  reward_threshold: 0.6
+  reward_decay_boost: 1.5
+  history_lookback_size: 200.0
+  dt_factor: 0.01
+  expression_r: 0.4
+  epsilon: 1e-09
