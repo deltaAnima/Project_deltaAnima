@@ -1,10 +1,13 @@
+
+
+
 # deltaAnima
 
 **deltaAnima** is a real-time, self-hosted backend for **Reminh**, an AI character that remembers past conversations and has a continuously evolving emotional state.
 
 You talk to Reminh by voice (or text) through a Unity client. She recalls relevant past conversations, reacts emotionally in a way shaped by her personality, answers in character, and speaks the answer back — all running on our own GPU servers, with no cloud APIs.
 
-<!-- TODO: add a demo GIF or video link here -->
+https://github.com/user-attachments/assets/58ccae23-5b89-4013-8cbe-ad9e223b61b3
 
 ---
 
