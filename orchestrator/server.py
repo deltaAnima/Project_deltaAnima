@@ -99,8 +99,8 @@ orchestrator = Orchestrator(
 class InferenceJob:
     text: str
     request_id: str
+    user_name: str
     from_role: str = ""
-    user_name: str = ""
     image_base64: Optional[str] = None
     received_at: float = field(default_factory=time.time)
 
@@ -132,11 +132,25 @@ async def on_edge_message(data):
     print(payload.get("text"))
 
     if msg_type in ("user_input", "stt_result"):
+        request_id = payload.get("request_id") or str(uuid.uuid4())
+        # user_name keys the user's Fuli memory/session, so never run inference without one
+        user_name = (payload.get("user_name") or "").strip()
+        if not user_name:
+            logger.warning(f"Rejected {msg_type!r} without user_name (request_id={request_id})")
+            await edge.send_routed("inference_result", {
+                "request_id": request_id,
+                "status": "error",
+                "output_text": None,
+                "error": "user_name is required",
+                "memory": None,
+            })
+            return
+
         job = InferenceJob(
             text=payload.get("text", ""),
-            request_id=payload.get("request_id") or str(uuid.uuid4()),
+            request_id=request_id,
+            user_name=user_name,
             from_role=data.get("from", ""),
-            user_name=payload.get("user_name", ""),
             image_base64=payload.get("image_base64"),
         )
         await orchestrator.submit(job)

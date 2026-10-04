@@ -101,7 +101,7 @@ class Orchestrator:
         # call — both are blocking, so both run off the event loop.
         system_prompt = await asyncio.to_thread(
             self.character.get_character_prompt,
-            user_name=job.user_name or job.from_role,
+            user_name=job.user_name,
             user_input=job.text,
         )
 
@@ -120,7 +120,7 @@ class Orchestrator:
             try:
                 save_result = await asyncio.to_thread(
                     self.character.save_turn,
-                    job.user_name or job.from_role,
+                    job.user_name,
                     text,
                 )
                 # to_client_payload() strips `query` (a verbose echo of our
