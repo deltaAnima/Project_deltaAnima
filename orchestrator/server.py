@@ -50,6 +50,8 @@ VL_handler = VisionLangHandler(
     max_token=config.vl_model.max_token,
     top_p=config.vl_model.top_p,
     model_full=config.vl_model.model_full,
+    enable_thinking=config.vl_model.enable_thinking,
+    timeout=config.vl_model.timeout,
 )
 
 edge = EdgeClient(

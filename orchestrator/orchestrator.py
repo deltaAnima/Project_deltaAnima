@@ -105,11 +105,12 @@ class Orchestrator:
             user_input=job.text,
         )
 
-        success, text = await asyncio.to_thread(
+        success, text, _llm_meta = await asyncio.to_thread(
             self.character.vl_handler.inference,
             user_prompt=job.text,
             system_prompt=system_prompt,
             image_base64=job.image_base64,
+            request_id=job.request_id,
         )
 
         memory_payload = None
