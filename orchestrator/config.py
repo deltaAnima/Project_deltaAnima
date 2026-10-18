@@ -10,6 +10,7 @@ different path to use an alternate config (e.g. for a second rig).
 from __future__ import annotations
 from dataclasses import dataclass, fields
 from pathlib import Path
+from typing import Optional
 import asyncio
 import os
 import yaml
@@ -36,6 +37,9 @@ class VLModelConfig:
     temperature: float
     max_token: int
     top_p: float
+    # None = leave it to the server default (Qwen3 thinks by default)
+    enable_thinking: Optional[bool] = None
+    timeout: float = 60
 
 
 @dataclass
