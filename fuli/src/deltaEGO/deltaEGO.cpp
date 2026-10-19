@@ -137,9 +137,21 @@ deltaEGO::deltaEGO(deltaEGO &&) noexcept = default;
 deltaEGO &deltaEGO::operator=(deltaEGO &&) noexcept = default;
 
 boost::asio::awaitable<nlohmann::json> deltaEGO::sephirothic_tree(
-    std::string context, bool use_jev, bool fallback_to_5090, bool use_5090,
-    bool fallback_to_jev)
+    std::string context, std::string mood_key, nlohmann::json emotion_policy)
 {
+  auto flag = [&emotion_policy](const char *key, bool def) {
+    if (emotion_policy.is_object() && emotion_policy.contains(key) &&
+        emotion_policy.at(key).is_boolean())
+      return emotion_policy.at(key).get<bool>();
+    return def;
+  };
+  // Key names follow the emotion_policy wire format (use_openjev), not
+  // Carmen's parameter names (use_jev).
+  bool use_jev = flag("use_openjev", false);
+  bool use_5090 = flag("use_5090", !use_jev);
+  bool fallback_to_5090 = flag("fallback_to_5090", false);
+  bool fallback_to_jev = flag("fallback_to_openjev", false);
+
   // co_await, not a plain call — whisper_from_Carmen is a coroutine
   // (it makes network calls to OpenJEV / the 5090 fallback), so without
   // co_await this would just hand back the unstarted
@@ -151,7 +163,8 @@ boost::asio::awaitable<nlohmann::json> deltaEGO::sephirothic_tree(
   // process_stimulus itself is still plain/synchronous (no network
   // calls in it) — co_return just wraps its result back into this
   // coroutine's awaitable<std::string>.
-  co_return this->process_stimulus(vad_point.V, vad_point.A, vad_point.D);
+  co_return this->process_stimulus(vad_point.V, vad_point.A, vad_point.D, mood_key,
+                                   emotion_policy);
 }
 
 bool deltaEGO::load_vad_db(const std::string &json_path)
@@ -159,7 +172,9 @@ bool deltaEGO::load_vad_db(const std::string &json_path)
   return ayin_->load_vad_db(json_path);
 }
 
-nlohmann::json deltaEGO::process_stimulus(float v, float a, float d)
+nlohmann::json deltaEGO::process_stimulus(float v, float a, float d,
+                                          const std::string &mood_key,
+                                          const nlohmann::json &emotion_policy)
 {
   structs::VAD_Point input = {v, a, d, 1.0f};
 
@@ -168,7 +183,7 @@ nlohmann::json deltaEGO::process_stimulus(float v, float a, float d)
   // Once OpenJEV integration lands, this is where deltaEGO would decide
   // between the caller-supplied stimulus and one Carmen derives from raw
   // text.
-  Ayin::Ayin::ProcessResult result = this->ayin_->Process(input);
+  Ayin::Ayin::ProcessResult result = this->ayin_->Process(mood_key, input, emotion_policy);
 
   json j_out;
   j_out["current_state"] = result.current_state;

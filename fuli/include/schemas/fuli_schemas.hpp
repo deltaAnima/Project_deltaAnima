@@ -4,7 +4,8 @@
 // These mirror exactly what Python's FuliHandler sends and reads:
 //
 //   payload = {
-//       "user_name": ..., "user_input": ..., "context": ...,
+//       "user_name": ..., "user_key": ..., "scope_key": ...,
+//       "user_input": ..., "context": ...,
 //       "config": {"rag_policy": {...}, "emotion_policy": {...}},
 //   }
 //   response.get("hits", [...]), response.get("emotion")
@@ -24,8 +25,39 @@ namespace schemas {
 
 using json = nlohmann::json;
 
+// Fallback for clients that don't send user_key yet — every pre-user_key
+// memory was keyed off user_name alone, so "legacy:{user_name}" is the
+// key those existing records get migrated onto (see the migration
+// script), which keeps old clients connected to their old memories.
+inline std::string ResolveUserKey(const json &j, const std::string &user_name) {
+  if (j.contains("user_key") && j.at("user_key").is_string() &&
+      !j.at("user_key").get<std::string>().empty())
+    return j.at("user_key").get<std::string>();
+  return "legacy:" + user_name;
+}
+
+inline std::optional<std::string> ReadScopeKey(const json &j) {
+  if (j.contains("scope_key") && j.at("scope_key").is_string() &&
+      !j.at("scope_key").get<std::string>().empty())
+    return j.at("scope_key").get<std::string>();
+  return std::nullopt;
+}
+
 struct FuliContextRequest {
+  // Display name only — identity (id hash, buffer/session ownership,
+  // retrieval scope) is user_key's job. Names collide and change
+  // (Discord nicknames differ per server), platform ids don't.
   std::string user_name;
+
+  // Stable per-platform identity, e.g. "unity:{uuid}" or
+  // "discord:{snowflake}". Falls back to "legacy:{user_name}" when the
+  // caller doesn't send one (see ResolveUserKey).
+  std::string user_key;
+
+  // Where this turn happens, e.g. "discord:{guild}:{channel}" or
+  // "discord:dm:{user}". Optional — legacy/Unity clients may omit it.
+  std::optional<std::string> scope_key;
+
   std::string user_input;
   std::optional<std::string> context; // free-form extra context, may be null
 
@@ -38,14 +70,11 @@ struct FuliContextRequest {
 
   RAGQueryOrder rag_policy; // parsed from config.rag_policy
 
-  // config.emotion_policy (OCEAN traits, physics weights, backend_flags
-  // like use_openjev/use_5090) is accepted here as raw, unparsed JSON.
-  // We deliberately do NOT turn this into a typed struct yet: deltaEGO
-  // currently loads its OCEAN/weights once at server startup from
-  // config/deltaEGO_default.yaml and ignores anything per-request. Wiring
-  // per-character emotion policy overrides (and the OpenJEV text->VAD
-  // call) is future work, tracked in the project conversation — not
-  // implemented in this MVP.
+  // config.emotion_policy (OCEAN traits, physics weights, backend flags
+  // like use_openjev/use_5090), kept as raw JSON — deltaEGO reads it
+  // directly (see deltaEGO::sephirothic_tree): weight sections override
+  // config/deltaEGO_default.yaml for this turn, flags pick the VAD
+  // backend.
   json emotion_policy_raw = json::object();
 };
 
@@ -56,6 +85,8 @@ struct FuliContextRequest {
 // level.
 inline void from_json(const json &j, FuliContextRequest &r) {
   j.at("user_name").get_to(r.user_name);
+  r.user_key = ResolveUserKey(j, r.user_name);
+  r.scope_key = ReadScopeKey(j);
   j.at("user_input").get_to(r.user_input);
   if (j.contains("context") && !j.at("context").is_null())
     r.context = j.at("context").get<std::string>();
@@ -72,6 +103,8 @@ inline void from_json(const json &j, FuliContextRequest &r) {
 inline void to_json(json &j, const FuliContextRequest &r) {
   j = json{
       {"user_name", r.user_name},
+      {"user_key", r.user_key},
+      {"scope_key", r.scope_key ? json(*r.scope_key) : json(nullptr)},
       {"user_input", r.user_input},
       {"context", r.context ? json(*r.context) : json(nullptr)},
       {"new_session", r.new_session},
@@ -138,6 +171,11 @@ inline void to_json(json &j, const FuliContextResponse &r)
 struct FuliContextSaveRequest
 {
   std::string user_name;
+  // Same meaning/fallback as FuliContextRequest's — together they name
+  // the per-turn buffer HandleContextRequest left behind, so they have
+  // to match what the context request sent.
+  std::string user_key;
+  std::optional<std::string> scope_key;
   std::string persona_name;
   std::string persona_response;
 };
@@ -148,6 +186,8 @@ struct FuliContextSaveRequest
 inline void from_json(const json &j, FuliContextSaveRequest &r)
 {
   j.at("user_name").get_to(r.user_name);
+  r.user_key = ResolveUserKey(j, r.user_name);
+  r.scope_key = ReadScopeKey(j);
   j.at("persona_name").get_to(r.persona_name);
   j.at("persona_response").get_to(r.persona_response);
 }
@@ -159,8 +199,27 @@ inline void from_json(const json &j, FuliContextSaveRequest &r)
 inline void to_json(json &j, const FuliContextSaveRequest &r)
 {
   j["user_name"]        = r.user_name;
+  j["user_key"]         = r.user_key;
+  j["scope_key"]        = r.scope_key ? json(*r.scope_key) : json(nullptr);
   j["persona_name"]     = r.persona_name;
   j["persona_response"] = r.persona_response;
+}
+
+// Body for /character/context_cancel — sent instead of the save request
+// when a turn won't be saved (inference failed, empty reply). Only the
+// identity fields matter: they name the buffer to drop.
+struct FuliContextCancelRequest
+{
+  std::string user_name;
+  std::string user_key;
+  std::optional<std::string> scope_key;
+};
+
+inline void from_json(const json &j, FuliContextCancelRequest &r)
+{
+  j.at("user_name").get_to(r.user_name);
+  r.user_key = ResolveUserKey(j, r.user_name);
+  r.scope_key = ReadScopeKey(j);
 }
 
 } // namespace schemas

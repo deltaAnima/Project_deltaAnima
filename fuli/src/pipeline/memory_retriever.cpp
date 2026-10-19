@@ -6,6 +6,7 @@
 #include <boost/uuid/uuid_generators.hpp>
 #include <boost/uuid/uuid_io.hpp>
 
+#include "config/constants.hpp"
 #include "pipeline/memory_retriever.hpp"
 
 #include "util/future_bridge.hpp"
@@ -24,6 +25,19 @@ namespace {
 // multiplier, not an adaptive one — fine for the few-hundred-vector MVP
 // index; revisit once over-fetching this much is actually expensive.
 constexpr int kOversampleFactor = 5;
+
+// Scopes whose memories must never surface anywhere but the scope
+// itself, regardless of MemoryScope policy — a DM recalled in a public
+// channel is a leak, not a feature.
+constexpr std::array<std::string_view, 1> kPrivateScopePrefixes = {"discord:dm:"};
+
+bool IsPrivateScope(const std::string &scope_key)
+{
+  for (std::string_view prefix : kPrivateScopePrefixes)
+    if (scope_key.starts_with(prefix))
+      return true;
+  return false;
+}
 
 } // namespace
 
@@ -94,6 +108,14 @@ inline UserId MemoryRetriever::MakeUserId(std::string_view key, uint64_t seed)
   return UserId{ .high = h1, .low = h2 };
 }
 
+UserId MemoryRetriever::MakeConversationId(const std::string& user_key,
+                                           const std::optional<std::string>& scope_key)
+{
+  // \x1f (unit separator) can't appear in either key in practice, so
+  // ("a", "b:c") and ("a:b", "c") can't collide into the same id.
+  return this->MakeUserId(user_key + '\x1f' + scope_key.value_or(""));
+}
+
 
 MemoryRetriever::MemoryRetriever(IVectorSearchEngine &search_engine,
                                   clients::RedisDbClient &redis)
@@ -109,6 +131,30 @@ net::awaitable<std::vector<RetrievedMemory>> MemoryRetriever::Retrieve(
 
   std::vector<RetrievedMemory> results;
   results.reserve(static_cast<size_t>(top_k));
+
+  // Which filters apply, decided once up front. A policy whose key is
+  // missing degrades to the other filter rather than to no filter at
+  // all — `scope` without a scope_key falls back to the user filter
+  // instead of returning every user's memories.
+  bool filter_user = false;
+  bool filter_scope = false;
+  bool filter_session = false;
+  UserId wanted_user{};
+  if (config)
+  {
+    filter_scope = config->scope_key.has_value() &&
+                   config->scope != schemas::MemoryScope::USER;
+    filter_user = config->user_id.has_value() &&
+                  (config->scope != schemas::MemoryScope::SCOPE || !filter_scope);
+    // Sessions are per (user_key, scope_key), so a session filter only
+    // makes sense for the policy that matches that exact pair — under
+    // `scope`/`user` it would throw away every other user's / scope's
+    // memories, which is exactly what those policies are for.
+    filter_session = config->session_id.has_value() &&
+                     config->scope == schemas::MemoryScope::USER_IN_SCOPE;
+    if (filter_user)
+      wanted_user = this->MakeUserId(*config->user_id);
+  }
 
   // raw.ids/raw.distances are already sorted nearest-first (that's what
   // Faiss's search() guarantees for L2), so the first top_k candidates
@@ -133,13 +179,30 @@ net::awaitable<std::vector<RetrievedMemory>> MemoryRetriever::Retrieve(
       // excluded. That's a judgment call, not a spec: tighten this to
       // "no session_id means excluded" if strict per-session isolation
       // turns out to matter more than recall.
-      if (config->session_id && meta->metadata.session_id &&
+      if (filter_session && meta->metadata.session_id &&
           *config->session_id != *meta->metadata.session_id)
+        continue;
+
+      // Unlike session_id, a missing user_id/scope_key is NOT treated as
+      // unscoped — an unattributed memory showing up in someone else's
+      // search is a cross-user leak, so strict wins over recall here.
+      if (filter_user &&
+          (meta->memory.user.user_id.high != wanted_user.high ||
+           meta->memory.user.user_id.low != wanted_user.low))
+        continue;
+
+      if (filter_scope && meta->metadata.scope_key != config->scope_key)
         continue;
 
       if (meta->metadata.importance < config->importance_threshold)
         continue;
     }
+
+    // Outside `if (config)` on purpose: no config means no scope to be
+    // "in", so a private memory is excluded rather than let through.
+    if (meta->metadata.scope_key && IsPrivateScope(*meta->metadata.scope_key) &&
+        (!config || meta->metadata.scope_key != config->scope_key))
+      continue;
 
     results.push_back({raw.ids[i], raw.distances[i], std::move(*meta)});
     if (static_cast<int>(results.size()) >= top_k)
@@ -167,52 +230,76 @@ net::awaitable<int64_t> MemoryRetriever::Store(const std::vector<float> &vector,
   co_return id;
 }
 
-std::pair<bool, clients::MemoryMetadata*> 
-MemoryRetriever::get_memory_buff_(const std::string& user_name, bool is_retrieve)
+std::pair<bool, std::shared_ptr<clients::MemoryMetadata>>
+MemoryRetriever::get_memory_buff_(const std::string& user_key,
+                                  const std::optional<std::string>& scope_key,
+                                  bool is_retrieve)
 {
-  UserId current_user_id = this->MakeUserId(user_name);
-  auto it = this->mem_buffer_.find(current_user_id);
+  UserId conversation_id = this->MakeConversationId(user_key, scope_key);
+  auto it = this->mem_buffer_.find(conversation_id);
 
   if (it != this->mem_buffer_.end())
   {
-    if (is_retrieve) 
+    if (!is_retrieve)
+      return {true, it->second.meta};
+
+    auto age = std::chrono::steady_clock::now() - it->second.created;
+    if (age < std::chrono::seconds(config::kStaleBufferSeconds))
     {
-      std::cerr << "[WARN] Buffer already exists during retrieve step for: " << user_name << "\n";
+      std::cerr << "[WARN] Buffer already exists during retrieve step for: " << user_key
+                << " (scope: " << scope_key.value_or("-") << ")\n";
       return {false, nullptr};
     }
 
-    return {true, it->second.get()};
+    // The caller never saved or cancelled this turn (crashed, lost the
+    // response, ...) — drop it rather than lock this conversation out
+    // until a restart. Any coroutine still holding it keeps its own
+    // shared_ptr copy.
+    std::cerr << "[WARN] Taking over stale buffer ("
+              << std::chrono::duration_cast<std::chrono::seconds>(age).count()
+              << "s old) for: " << user_key << " (scope: " << scope_key.value_or("-") << ")\n";
+    this->mem_buffer_.erase(it);
   }
-  if(!is_retrieve && it == this->mem_buffer_.end())
+  else if (!is_retrieve)
   {
     return {false, nullptr};
   }
-  auto new_mem = std::make_unique<clients::MemoryMetadata>();
-    std::cout << "[INFO] New context session created for user: " << user_name << "\n";
 
-  new_mem->memory.user.user_name = user_name;
-  new_mem->memory.user.user_id.high = current_user_id.high;
-  new_mem->memory.user.user_id.low  = current_user_id.low;
+  auto new_mem = std::make_shared<clients::MemoryMetadata>();
+    std::cout << "[INFO] New context session created for user: " << user_key << "\n";
 
-  clients::MemoryMetadata* raw_ptr = new_mem.get();
-  this->mem_buffer_.emplace(current_user_id, std::move(new_mem));
-  
-  return std::pair<bool, clients::MemoryMetadata*> {
-    true, raw_ptr
-  };
-}
-bool MemoryRetriever::delete_memory_buff_(const UserId& user_id)
-{
-    return this->mem_buffer_.erase(user_id) > 0;
-}
-bool MemoryRetriever::delete_memory_buff_(const std::string& user_name)
-{
-    return this->delete_memory_buff_(this->MakeUserId(static_cast<std::string_view>(user_name)));
+  // user_id is the user alone (not the conversation id) — it's what
+  // Retrieve's user filter matches against, across every scope.
+  UserId user_id = this->MakeUserId(user_key);
+  new_mem->memory.user.user_key = user_key;
+  new_mem->memory.user.user_id.high = user_id.high;
+  new_mem->memory.user.user_id.low  = user_id.low;
+  new_mem->metadata.scope_key = scope_key;
+
+  this->mem_buffer_.emplace(conversation_id,
+                            ConversationBuffer{new_mem, std::chrono::steady_clock::now()});
+
+  return {true, std::move(new_mem)};
 }
 
-std::string MemoryRetriever::GetOrCreateSessionId(const std::string& user_name, bool force_new)
+bool MemoryRetriever::delete_memory_buff_(const std::string& user_key,
+                                          const std::optional<std::string>& scope_key,
+                                          const clients::MemoryMetadata* expected)
 {
-  UserId id = this->MakeUserId(user_name);
+  auto it = this->mem_buffer_.find(this->MakeConversationId(user_key, scope_key));
+  if (it == this->mem_buffer_.end())
+    return false;
+  if (expected && it->second.meta.get() != expected)
+    return false;
+  this->mem_buffer_.erase(it);
+  return true;
+}
+
+std::string MemoryRetriever::GetOrCreateSessionId(const std::string& user_key,
+                                                  const std::optional<std::string>& scope_key,
+                                                  bool force_new)
+{
+  UserId id = this->MakeConversationId(user_key, scope_key);
 
   if (!force_new)
   {
@@ -225,7 +312,8 @@ std::string MemoryRetriever::GetOrCreateSessionId(const std::string& user_name, 
   std::string session_id = boost::uuids::to_string(gen());
 
   this->session_ids_[id] = session_id; // insert or overwrite an existing (force_new) entry
-  std::cout << "[INFO] New session " << session_id << " created for user: " << user_name << "\n";
+  std::cout << "[INFO] New session " << session_id << " created for user: " << user_key
+            << " (scope: " << scope_key.value_or("-") << ")\n";
 
   return session_id;
 }

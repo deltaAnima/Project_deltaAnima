@@ -56,6 +56,8 @@ public:
   HandleContextRequest(schemas::FuliContextRequest req);
   boost::asio::awaitable<nlohmann::json>
   HandleContextSaveRequest(schemas::FuliContextSaveRequest req);
+  boost::asio::awaitable<nlohmann::json>
+  HandleContextCancelRequest(schemas::FuliContextCancelRequest req);
 
 private:
   clients::EmbeddingClient &embedder_;

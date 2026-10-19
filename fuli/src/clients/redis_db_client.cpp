@@ -93,6 +93,7 @@ MemoryMetadata FieldsToMetadata(const std::map<std::string, std::string> &f)
 
   meta.memory.user.user_id.high = GetUInt64(f, "memory.user.user_id.high", 0);
   meta.memory.user.user_id.low = GetUInt64(f, "memory.user.user_id.low", 0);
+  meta.memory.user.user_key = Get(f, "memory.user.user_key");
   meta.memory.user.user_name = Get(f, "memory.user.user_name");
   meta.memory.user.user_content = Get(f, "memory.user.user_content");
 
@@ -125,6 +126,12 @@ MemoryMetadata FieldsToMetadata(const std::map<std::string, std::string> &f)
   if (!session_id.empty())
     meta.metadata.session_id = session_id;
 
+  // Same empty-means-absent convention as session_id — records written
+  // before scope_key existed simply have no such field.
+  std::string scope_key = Get(f, "metadata.scope_key");
+  if (!scope_key.empty())
+    meta.metadata.scope_key = scope_key;
+
   meta.metadata.importance = GetFloat(f, "metadata.importance", 0.5f);
   meta.metadata.timestamp = GetInt64(f, "metadata.timestamp", 0);
   meta.metadata.faiss_id = GetInt64(f, "metadata.faiss_id", 0);
@@ -155,6 +162,7 @@ std::map<std::string, std::string> MetadataToFields(const MemoryMetadata* meta)
       {"memory.content.model_response", meta->memory.content.model_response},
       {"memory.user.user_id.high", std::to_string(meta->memory.user.user_id.high)},
       {"memory.user.user_id.low", std::to_string(meta->memory.user.user_id.low)},
+      {"memory.user.user_key", meta->memory.user.user_key},
       {"memory.user.user_name", meta->memory.user.user_name},
       {"memory.user.user_content", meta->memory.user.user_content},
       {"memory.persona.persona_name", meta->memory.persona.persona_name},
@@ -167,6 +175,7 @@ std::map<std::string, std::string> MetadataToFields(const MemoryMetadata* meta)
       {"memory.emotion.similarity", std::to_string(meta->memory.emotion.similarity)},
       {"emotion_analysis.deltaEGO_analysis", meta->emotion_analysis.deltaEGO_analysis},
       {"metadata.session_id", meta->metadata.session_id.value_or("")},
+      {"metadata.scope_key", meta->metadata.scope_key.value_or("")},
       {"metadata.importance", std::to_string(meta->metadata.importance)},
       {"metadata.timestamp", std::to_string(meta->metadata.timestamp)},
       {"metadata.faiss_id", std::to_string(meta->metadata.faiss_id)},

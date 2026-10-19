@@ -26,7 +26,7 @@ inline constexpr const char *kEmbeddingPort = "8080";
 inline constexpr const char *kRedisHost = "127.0.0.1";
 inline constexpr const char *kRedisPort = "8080";
 
-// The 5090 machine's llama.cpp server — Llama5090Client's fallback VAD
+// The 5090 machine's SGLang server — Llama5090Client's fallback VAD
 // estimator (see emotion_policy.use_5090/fallback_to_5090). Different
 // physical host from everything else here, unlike kRedisHost.
 inline constexpr const char *kLlama5090Host = "127.0.0.1";
@@ -40,6 +40,20 @@ inline constexpr const char *kOpenJevPort = "8080";
 // The port THIS server (orchestrator_server) listens on for the
 // /character/context endpoint that FuliHandler (the Python side) calls.
 inline constexpr unsigned short kListenPort = 8080;
+
+// How long a per-turn memory buffer (created by /character/context,
+// consumed by /character/context_memory) may sit unsaved before the
+// next context request for the same (user_key, scope_key) is allowed to
+// take it over. Safety net for callers that died between the two calls
+// without reaching /character/context_cancel — must stay comfortably
+// above the slowest inference a caller will still save afterwards.
+inline constexpr int kStaleBufferSeconds = 300;
+
+// deltaEGO keeps one mood (VAD state + history) per scope_key. A mood
+// untouched for this long is dropped and the next message in that scope
+// starts again from the resting state — keeps channels that went quiet
+// from accumulating forever.
+inline constexpr int kMoodIdleSeconds = 24 * 60 * 60;
 
 // These are relative filesystem paths, resolved against whatever
 // directory you launch the binary from — NOT relative to this header or

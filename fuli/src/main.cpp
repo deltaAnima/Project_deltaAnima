@@ -162,11 +162,10 @@ int main()
   // you need real parallelism across requests, not just concurrency.
   net::io_context ioc{1};
 
-  // deltaEGO owns its own OCEAN/physics config (loaded once, here, at
-  // startup) — it does NOT yet read the per-request emotion_policy the
-  // client sends (see schemas/fuli_schemas.hpp's emotion_policy_raw
-  // comment). def_V/def_A/def_D/def_radius (all zeros/1.0 here) are the
-  // character's resting emotional state before any stimulus is applied.
+  // deltaEGO's YAML config (loaded once, here, at startup) is the
+  // default; each request's emotion_policy overrides it for that turn
+  // (see deltaEGO::sephirothic_tree). def_V/def_A/def_D/def_radius (all
+  // zeros/1.0 here) are the resting state every per-scope mood starts at.
   std::cout << "[Init] loading deltaEGO config: " << config::kDeltaEgoConfigPath
             << std::endl;
   deltaEGO::deltaEGO emotion_engine(ioc, config::kDeltaEgoConfigPath, 0.0f, 0.0f,
@@ -267,6 +266,19 @@ int main()
       nlohmann::json saved_memory =
           co_await orchestrator.HandleContextSaveRequest(std::move(req));
       co_return saved_memory.dump();
+    }
+  );
+
+  server.RegisterRoute(
+    "POST /character/context_cancel",
+    [&orchestrator](std::string body) -> net::awaitable<std::string>
+    {
+      schemas::FuliContextCancelRequest req =
+          json::parse(body).get<schemas::FuliContextCancelRequest>();
+
+      nlohmann::json result =
+          co_await orchestrator.HandleContextCancelRequest(std::move(req));
+      co_return result.dump();
     }
   );
 

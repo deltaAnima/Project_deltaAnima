@@ -9,6 +9,8 @@
 #include <vector>
 #include <variant>
 #include <array>
+#include <chrono>
+#include <memory>
 
 #include "clients/redis_db_client.hpp"
 #include "engine/vector_search_engine.hpp"
@@ -78,7 +80,8 @@ class MemoryRetriever
     clients::RedisDbClient &redis);
     
     // Runs a Faiss search, joins each candidate against Redis metadata,
-    // drops anything that fails session_id/importance_threshold, and
+    // drops anything outside config's user/scope policy or below
+    // importance_threshold, and
     // returns up to top_k survivors sorted by distance (best first).
     // `config` is RAGQueryOrder.memory_config — std::nullopt means "no
     // memory-domain filtering requested", not "search nothing".
@@ -101,34 +104,63 @@ class MemoryRetriever
   boost::asio::awaitable<int64_t> Store(const std::vector<float> &vector,
     clients::MemoryMetadata* metadata);
 
-  std::pair<bool, clients::MemoryMetadata*>
-    get_memory_buff_(const std::string& user_name, bool is_retrieve);
+  // Per-turn buffers and sessions are keyed by (user_key, scope_key),
+  // not user_key alone — the same Discord user talking in two channels
+  // at once is two independent conversations, and keying by user alone
+  // would trip the "buffer already exists" check on the second one.
+  //
+  // Buffers are shared_ptr, not unique_ptr: a context/save coroutine
+  // holds its buffer across co_awaits, and a cancel (or stale takeover)
+  // can erase the map entry in the meantime — the coroutine's copy keeps
+  // the object alive instead of leaving it a dangling pointer.
+  //
+  // On retrieve, an existing buffer younger than kStaleBufferSeconds is
+  // rejected ({false, nullptr}); an older one is taken over.
+  std::pair<bool, std::shared_ptr<clients::MemoryMetadata>>
+    get_memory_buff_(const std::string& user_key,
+                     const std::optional<std::string>& scope_key, bool is_retrieve);
 
-  bool delete_memory_buff_(const UserId& user_id);
-  bool delete_memory_buff_(const std::string& user_name);
+  // `expected` non-null = only erase if the map still holds that exact
+  // buffer, so a slow save can't erase a newer turn's buffer that took
+  // over in the meantime. nullptr = erase whatever is there (cancel).
+  bool delete_memory_buff_(const std::string& user_key,
+                           const std::optional<std::string>& scope_key,
+                           const clients::MemoryMetadata* expected = nullptr);
 
   // Session ownership lives here, not with the caller (Python): the
-  // first call for a given user_name mints a fresh UUID and remembers
-  // it in session_ids_ (separate from mem_buffer_, which is erased every
-  // turn once a save completes — a session has to outlive any single
-  // turn). Every later call for that same user_name gets the same id
+  // first call for a given (user_key, scope_key) mints a fresh UUID and
+  // remembers it in session_ids_ (separate from mem_buffer_, which is
+  // erased every turn once a save completes — a session has to outlive
+  // any single turn). Every later call for that same pair gets the same id
   // back, so Retrieve()'s session_id filter and a new memory's
   // metadata.session_id stay consistent across a whole conversation.
   // force_new (driven by FuliContextRequest::new_session) skips the
   // lookup and always mints + remembers a fresh id instead — the one
-  // lever the caller has over an otherwise-permanent-per-user_name
+  // lever the caller has over an otherwise-permanent-per-conversation
   // session.
-  std::string GetOrCreateSessionId(const std::string& user_name, bool force_new = false);
+  std::string GetOrCreateSessionId(const std::string& user_key,
+                                   const std::optional<std::string>& scope_key,
+                                   bool force_new = false);
 
 private:
   inline uint64_t fmix64(uint64_t k);
   inline UserId MakeUserId(std::string_view key, uint64_t seed = 0);
+  // Buffer/session map key — NOT what gets stored as a memory's user_id
+  // (that's MakeUserId(user_key) alone, so retrieval can match a user
+  // across scopes).
+  UserId MakeConversationId(const std::string& user_key,
+                            const std::optional<std::string>& scope_key);
 
   IVectorSearchEngine &search_engine_;
   clients::RedisDbClient &redis_;
 
   std::unordered_map<std::string, UserId> name_to_id_;
-  std::unordered_map<UserId, std::unique_ptr<clients::MemoryMetadata>> mem_buffer_;
+  struct ConversationBuffer
+  {
+    std::shared_ptr<clients::MemoryMetadata> meta;
+    std::chrono::steady_clock::time_point created;
+  };
+  std::unordered_map<UserId, ConversationBuffer> mem_buffer_;
   std::unordered_map<UserId, std::string> session_ids_;
 };
 
