@@ -25,8 +25,9 @@ class Orchestrator:
 
     Jobs go in via submit(); each one is turned into a persona prompt
     through `character` (which round-trips to Fuli for memories/emotion),
-    run through the VL model, and the result is sent as "inference_result"
-    (and, on success, "tts_request") over the edge socket. Both message
+    run through the VL model, and the result is either handed back on
+    the job's `reply` future (HTTP callers, e.g. Discord) or sent as
+    "inference_result" (and, on success, "tts_request") over the edge socket. Both message
     types are implicitly routed by the edge hub's static routing table
     (Orchestrator -> Client / Tts), so no explicit `to` is needed.
     """
@@ -90,8 +91,11 @@ class Orchestrator:
             job = await self._queue.get()
             try:
                 await self._process(job)
-            except Exception:
+            except Exception as e:
                 logger.exception("[Orchestrator] job failed (request_id=%s)", job.request_id)
+                # an HTTP caller is awaiting this future — don't leave it hanging until its timeout
+                if job.reply is not None and not job.reply.done():
+                    job.reply.set_exception(e)
             finally:
                 self._queue.task_done()
 
@@ -101,26 +105,32 @@ class Orchestrator:
         # call — both are blocking, so both run off the event loop.
         system_prompt = await asyncio.to_thread(
             self.character.get_character_prompt,
-            user_name=job.user_name or job.from_role,
+            user_key=job.user_key,
+            scope_key=job.scope_key,
+            user_name=job.user_name,
             user_input=job.text,
+            platform=job.platform,
         )
 
-        success, text = await asyncio.to_thread(
+        success, text, _llm_meta = await asyncio.to_thread(
             self.character.vl_handler.inference,
             user_prompt=job.text,
             system_prompt=system_prompt,
             image_base64=job.image_base64,
+            request_id=job.request_id,
         )
 
         memory_payload = None
         if success:
-            # Closes the memory buffer __call_Fuli__ opened for this user_name;
+            # Closes the memory buffer __call_Fuli__ opened for this user;
             # Fuli refuses their *next* request until this runs. Never let a
             # save failure swallow a response the user already got a reply to.
             try:
                 save_result = await asyncio.to_thread(
                     self.character.save_turn,
-                    job.user_name or job.from_role,
+                    job.user_key,
+                    job.scope_key,
+                    job.user_name,
                     text,
                 )
                 # to_client_payload() strips `query` (a verbose echo of our
@@ -137,6 +147,14 @@ class Orchestrator:
             "error": None if success else text,
             "memory": memory_payload,
         }
+
+        # HTTP callers (Discord) get the result straight back and never touch
+        # the edge: the hub would fan it out to every Unity Client and voice it via Tts
+        if job.reply is not None:
+            if not job.reply.done():
+                job.reply.set_result(payload)
+            return
+
         # no `to` here: the hub's routing table fixes (Orchestrator, "inference_result") -> Client,
         # so it always fans out to whichever Client(s) are connected regardless of job.from_role
         await self.edge.send_routed("inference_result", payload)

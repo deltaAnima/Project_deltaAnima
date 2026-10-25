@@ -25,13 +25,16 @@ class Enigmata:
 
     def _load(self) -> None:
         raw = load_yaml(self.config_path)
-        self.ocean: Dict[str, float] = raw.get("OCEAN", {})
+        ocean = raw.get("OCEAN", {})
+
+        # validate before assigning so a bad yaml on reload leaves the old values intact
+        if not ocean:
+            raise ValueError(f"YAML format error!!!: {self.config_path}")
+
+        self.ocean: Dict[str, float] = ocean
         self.analysis_weights: Dict[str, float] = raw.get("AnalysisWeights", {})
         self.formula_weights: Dict[str, Any] = raw.get("FormulaWeights", {})
         self.advanced_config: Dict[str, float] = raw.get("AdvancedConfig", {})
-
-        if not self.ocean:
-            raise ValueError(f"YAML format error!!!: {self.config_path}")
 
     @staticmethod
     def backend_flags() -> Dict[str, bool]:
