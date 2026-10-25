@@ -11,6 +11,10 @@ use tracing::{info, warn};
 use crate::routing::Route;
 use crate::stt::SttClient;
 
+/// Identity fields copied from the client's audio_end payload into the orchestrator's user_input
+const IDENTITY_KEYS: [&str; 4] = ["user_name", "platform", "platform_user_id", "scope_id"];
+
+
 // ──────────────────────────────────────────────
 //  Protocol: first message must be Register
 // ──────────────────────────────────────────────
@@ -233,12 +237,16 @@ impl Hub {
                 let secs = pcm.len() as f32 / (stt.sample_rate as f32 * 2.0);
                 info!("[{peer}] audio_end: {secs:.2}s of audio → STT");
 
+                // Client identity (user_name, platform, ...) rides on audio_end; the
+                // orchestrator rejects user_input without user_name
+                let identity = env.payload;
+
                 let hub = self.clone();
                 let stt = stt.clone();
                 let client_tx = client_tx.clone();
                 let peer = *peer;
                 tokio::spawn(async move {
-                    hub.run_stt(stt, pcm, client_tx, peer).await;
+                    hub.run_stt(stt, pcm, identity, client_tx, peer).await;
                 });
                 true
             }
@@ -246,10 +254,12 @@ impl Hub {
         }
     }
 
+
     async fn run_stt(
         &self,
         stt: Arc<SttClient>,
         pcm: Vec<u8>,
+        identity: Option<serde_json::Value>,
         client_tx: mpsc::UnboundedSender<Message>,
         peer: SocketAddr,
     ) {
@@ -270,10 +280,19 @@ impl Hub {
                 }
 
                 // Hand off to the orchestrator as a normal user_input
+                let mut payload = serde_json::json!({ "text": text, "source": "stt" });
+                if let Some(serde_json::Value::Object(id)) = &identity {
+                    for key in IDENTITY_KEYS {
+                        if let Some(v) = id.get(key) {
+                            payload[key] = v.clone();
+                        }
+                    }
+                }
+
                 let input = serde_json::json!({
                     "type": "user_input",
                     "from": Role::Client,
-                    "payload": { "text": text, "source": "stt" },
+                    "payload": payload,
                 });
                 self.send_to_role(Role::Orchestrator, Message::Text(input.to_string().into()));
             }
