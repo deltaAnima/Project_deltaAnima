@@ -20,7 +20,7 @@ load_dotenv()
     custom libs
 """
 from Server.Pydantic_frame import(
-    DiscordBotTextRequest,
+    DiscordBotTextRequest, DiscordBotTextResponse
 )
 from VisionLangHandler import VisionLangHandler
 from edge_client import EdgeClient
@@ -101,9 +101,18 @@ orchestrator = Orchestrator(
 class InferenceJob:
     text: str
     request_id: str
+    # stable identity, "<platform>:<platform_user_id>" — keys Fuli memory/session
+    user_key: str
+    # where the user is talking, e.g. "discord:<guild_id>:<channel_id>" — bounds Fuli retrieval/session
+    scope_key: str
+    # display name only (prompt, saved memory); may change freely
     user_name: str
+    platform: str
+    platform_user_id: str
     from_role: str = ""
     image_base64: Optional[str] = None
+    # set for HTTP callers (Discord): the result comes back here instead of over the edge
+    reply: Optional[asyncio.Future] = None
     received_at: float = field(default_factory=time.time)
 
 
@@ -148,10 +157,28 @@ async def on_edge_message(data):
             })
             return
 
+        platform = (payload.get("platform") or "").strip().lower()
+        platform_user_id = str(payload.get("platform_user_id") or "").strip()
+        if not platform or not platform_user_id or ":" in platform:
+            # old clients only send user_name; keep them working, but they still
+            # collide across platforms/same names until they send real ids
+            logger.warning(
+                f"{msg_type!r} without platform/platform_user_id, falling back to legacy key "
+                f"(request_id={request_id}, user_name={user_name!r})"
+            )
+            platform, platform_user_id = "legacy", user_name
+
+        # edge clients (Unity) may name a room/scene; otherwise one shared scope per platform
+        scope_id = str(payload.get("scope_id") or "").strip() or "default"
+
         job = InferenceJob(
             text=payload.get("text", ""),
             request_id=request_id,
+            user_key=f"{platform}:{platform_user_id}",
+            scope_key=f"{platform}:{scope_id}",
             user_name=user_name,
+            platform=platform,
+            platform_user_id=platform_user_id,
             from_role=data.get("from", ""),
             image_base64=payload.get("image_base64"),
         )
@@ -184,9 +211,83 @@ app = FastAPI(lifespan=lifespan)
 # ──────────────────────────────────────────────
 #  Routes: HTTP (No edge route)
 # ──────────────────────────────────────────────
-@app.post("/discord/chat")
-async def discord_chat_http(request: DiscordBotTextRequest):
-    raise NotImplementedError("TODO: 기존 handle_discord_text_inference 로직 이식")
+# Discord jobs share the single inference worker with Unity, so this has to
+# cover time spent queued behind other turns, not just one inference.
+DISCORD_REPLY_TIMEOUT = 180.0
+
+
+@app.post("/discord/chat", response_model=DiscordBotTextResponse)
+async def discord_chat_http(request: DiscordBotTextRequest) -> DiscordBotTextResponse:
+    request_id = str(uuid.uuid4())
+
+    user_name = request.user_name.strip()
+    user_id = request.user_id.strip()
+    if not user_name or not user_id:
+        logger.warning(f"Rejected discord chat without user_name/user_id (request_id={request_id})")
+        return DiscordBotTextResponse(request_id=request_id, status="error", error="user_name and user_id are required")
+
+    # a DM is its own scope, so nothing said there can surface in a server channel
+    if request.is_dm or not request.guild_id:
+        scope_key = f"discord:dm:{request.channel_id}"
+    else:
+        scope_key = f"discord:{request.guild_id}:{request.channel_id}"
+
+    reply: asyncio.Future = asyncio.get_running_loop().create_future()
+    job = InferenceJob(
+        text=request.message_content,
+        request_id=request_id,
+        user_key=f"discord:{user_id}",
+        scope_key=scope_key,
+        user_name=user_name,
+        platform="discord",
+        platform_user_id=user_id,
+        from_role="discord",
+        # the VL handler takes one image per turn
+        image_base64=request.attachments[0] if request.attachments else None,
+        reply=reply,
+    )
+    await orchestrator.submit(job)
+
+    try:
+        result = await asyncio.wait_for(reply, timeout=DISCORD_REPLY_TIMEOUT)
+    except asyncio.TimeoutError:
+        # the job stays queued and still runs (and saves to Fuli) later; only this reply is lost
+        logger.warning(f"Discord reply timed out (request_id={request_id})")
+        return DiscordBotTextResponse(request_id=request_id, status="error", error="inference timed out")
+    except Exception as e:
+        return DiscordBotTextResponse(request_id=request_id, status="error", error=f"inference failed: {e}")
+
+    emotion_terms = ((result.get("memory") or {}).get("memory") or {}).get("emotion", {}).get("emotion_terms") or []
+    return DiscordBotTextResponse(
+        request_id=request_id,
+        status=result["status"],
+        output_text=result["output_text"],
+        error=result["error"],
+        emotion_tag=emotion_terms[0] if emotion_terms else None,
+    )
+
+
+
+@app.post("/character/emotion/reload")
+async def reload_emotion_params():
+    """Re-reads the character's physics_weights.yaml so OCEAN/weights changes apply without a restart."""
+    try:
+        character.Evernight.reload()
+    except Exception as e:
+        logger.exception("Emotion param reload failed")
+        return {"status": "error", "error": str(e)}
+    return {"status": "success", "character": character.name, "OCEAN": character.Evernight.ocean}
+
+
+@app.post("/character/prompt/reload")
+async def reload_prompts():
+    """Re-reads the character's prompt.yaml (+ shared VAD prompt) so prompt edits apply without a restart."""
+    try:
+        character.prompt_handler.reload()
+    except Exception as e:
+        logger.exception("Prompt reload failed")
+        return {"status": "error", "error": str(e)}
+    return {"status": "success", "character": character.name}
 
 
 @app.get("/health")

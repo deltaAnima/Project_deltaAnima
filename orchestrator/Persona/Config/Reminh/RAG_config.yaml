@@ -13,6 +13,8 @@ RAG_config:
     enable_time_decay: true
     recency_weight: 0.3
     importance_threshold: 0.5
+    # retrieval boundary relative to user_key/scope_key (Fuli-defined)
+    scope: "user_in_scope"
 
   knowledge_config:
     collection_names: ["reminh_kb"]

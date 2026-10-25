@@ -34,9 +34,9 @@ vl_model:
   address: "127.0.0.1"
   port: "8080"
   # must match SGLang's --served-model-name (GET /get_model_info -> served_model_name)
-  alias: "qwen3.8-27b-ablit"
+  alias: "gemma-4-26b-a4b-uncensored"
   # matched against GET /get_model_info -> model_path
-  model_full: "edp1096/Huihui-RadixArk-Qwen3.8-27B-abliterated-NVFP4"
+  model_full: "AEON-7/Gemma-4-26B-A4B-it-Uncensored-NVFP4"
   temperature: 0.8
   # shared by thinking + answer when enable_thinking is on
   max_token: 3000

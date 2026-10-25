@@ -1,6 +1,5 @@
 from typing import Any, Dict, Optional
 from pathlib import Path
-import time
 
 from VisionLangHandler import VisionLangHandler
 from Persona.PromptHandler import PromptHandler
@@ -24,7 +23,6 @@ class Character:
                  chara_name: str,
                  vl_handler: VisionLangHandler,
                  config_root: Optional[Path] = None,
-                 session_timeout: float = 1800.0,
                  ):
         self.name: str = chara_name
 
@@ -32,13 +30,6 @@ class Character:
 
         # single source of truth for every microservice address; see config.yaml
         self.server_ips: config.ServerIps = config.servers
-
-        # session tracking: no explicit "session start" signal exists anywhere
-        # upstream (Client/STT/edge), so we infer it ourselves — first request
-        # from a given user_name, or one that arrives after `session_timeout`
-        # seconds of silence from them, counts as a new session.
-        self.session_timeout = session_timeout
-        self._last_seen: Dict[str, float] = {}
 
         self.config_root: Path = config_root or (Path(__file__).parent / "Config")
         self.config_paths: Dict[str, Path] = self.__save_path__()
@@ -57,59 +48,70 @@ class Character:
                                                     RAG_Handler=self.March_7th,
                                                     Emotion_Handler=self.Evernight)
 
-    def get_character_prompt(self, user_name:str,
+    def get_character_prompt(self, user_key:str,
+                                   scope_key:str,
+                                   user_name:str,
                                    user_input:str,
-                                   context:Optional[str]=None) -> str:
+                                   context:Optional[str]=None,
+                                   platform:Optional[str]=None) -> str:
         """
         Returns the character's prompt with the user's input and context filled in.
         Fetches memories + mood from Fuli in one round trip, then fills them
         into the Discord-text prompt template.
+
+        `user_key` ("<platform>:<platform_user_id>") identifies the user,
+        `scope_key` identifies where they're talking (e.g. a Discord channel);
+        `user_name` is only the display name shown in the prompt. Sessions
+        are resolved by Fuli from user_key + scope_key. `platform` picks the
+        prompt template ("discord" → text-chat prompt).
         """
-        fuli_result = self.__call_Fuli__(user_input, user_name, context)
-        return self.prompt_handler.get_reminh_prompt(
+        fuli_result = self.__call_Fuli__(user_input, user_key, scope_key, user_name, context)
+        # Discord gets the text-chat prompt; everything else (Unity/TTS) the spoken one
+        build_prompt = (
+            self.prompt_handler.get_discord_Text_prompt
+            if platform == "discord"
+            else self.prompt_handler.get_reminh_prompt
+        )
+        return build_prompt(
             user_name=user_name,
             memories=fuli_result["memories"],
             mood=fuli_result["emotion"] or ["calm"],
         )
 
     def __call_Fuli__(self, user_input:str,
+                          user_key:str,
+                          scope_key:str,
                           user_name:str,
                           context:Optional[str]=None) -> Dict[str, Any]:
         """
-        Single round trip to Fuli: sends the raw user_name/user_input/context
-        plus this character's RAG/emotion policy as top-level fields — Fuli
+        Single round trip to Fuli: sends the raw user_key/scope_key/user_name/
+        user_input/context plus this character's RAG/emotion policy — Fuli
         handles embedding, RAG search, and emotion computation itself.
         Returns {"memories": str, "emotion": ...}.
         """
         return self.Emanator.query_character_context(
+            user_key=user_key,
+            scope_key=scope_key,
             user_name=user_name,
             user_input=user_input,
             context=context,
-            new_session=self.__is_new_session__(user_name),
         )
 
-    def save_turn(self, user_name: str, persona_response: str) -> ContextSaveResponse:
+    def save_turn(self, user_key: str, scope_key: str, user_name: str, persona_response: str) -> ContextSaveResponse:
         """
         Tells Fuli what this character actually said, closing out the
-        memory buffer __call_Fuli__ opened for `user_name`. Must be
+        memory buffer __call_Fuli__ opened for `user_key`. Must be
         called exactly once per turn (after the VL model produces its
         response) — Fuli refuses the next context request for the same
-        user_name until this runs. Returns the full saved-memory record
+        user until this runs. Returns the full saved-memory record
         Fuli reports back.
         """
-        return self.Emanator.save_context_memory(user_name=user_name, persona_response=persona_response)
-
-    def __is_new_session__(self, session_key: str) -> bool:
-        """
-        True if this is the first request from `session_key` (usually
-        user_name), or one arriving after session_timeout seconds of
-        silence from them. Updates the last-seen timestamp as a side
-        effect either way, so the timeout keeps sliding with activity.
-        """
-        now = time.monotonic()
-        last_seen = self._last_seen.get(session_key)
-        self._last_seen[session_key] = now
-        return last_seen is None or (now - last_seen) > self.session_timeout
+        return self.Emanator.save_context_memory(
+            user_key=user_key,
+            scope_key=scope_key,
+            user_name=user_name,
+            persona_response=persona_response,
+        )
 
     def __save_path__(self) -> Dict[str, Path]:
         chara_dir = self.config_root / self.name

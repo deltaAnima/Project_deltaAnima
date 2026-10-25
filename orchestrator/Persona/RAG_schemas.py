@@ -43,6 +43,9 @@ class MemoryQueryConfig(BaseModel):
     reference_timestamp: Optional[datetime] = (
         None  # Reference timestamp (defaults to current time)
     )
+    # Retrieval boundary relative to the request's user_key/scope_key
+    # (e.g. "user_in_scope" = only this user's memories from this scope)
+    scope: str = "user_in_scope"
 
 
 class KnowledgeQueryConfig(BaseModel):
