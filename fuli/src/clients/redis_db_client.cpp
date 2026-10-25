@@ -28,6 +28,10 @@ namespace {
 
 std::string MemKey(int64_t faiss_id) { return "mem:" + std::to_string(faiss_id); }
 
+constexpr const char *kSessionsKey = "sessions";
+
+std::string RecentKey(const std::string &recent_key) { return "recent:" + recent_key; }
+
 // HGETALL comes back as a flat {string: string} map — these two helpers
 // are the only places that know MemoryMetadata's nested C++ shape maps
 // onto dot-prefixed flat field names ("memory.content.user_input", ...)
@@ -93,6 +97,7 @@ MemoryMetadata FieldsToMetadata(const std::map<std::string, std::string> &f)
 
   meta.memory.user.user_id.high = GetUInt64(f, "memory.user.user_id.high", 0);
   meta.memory.user.user_id.low = GetUInt64(f, "memory.user.user_id.low", 0);
+  meta.memory.user.user_key = Get(f, "memory.user.user_key");
   meta.memory.user.user_name = Get(f, "memory.user.user_name");
   meta.memory.user.user_content = Get(f, "memory.user.user_content");
 
@@ -125,6 +130,12 @@ MemoryMetadata FieldsToMetadata(const std::map<std::string, std::string> &f)
   if (!session_id.empty())
     meta.metadata.session_id = session_id;
 
+  // Same empty-means-absent convention as session_id — records written
+  // before scope_key existed simply have no such field.
+  std::string scope_key = Get(f, "metadata.scope_key");
+  if (!scope_key.empty())
+    meta.metadata.scope_key = scope_key;
+
   meta.metadata.importance = GetFloat(f, "metadata.importance", 0.5f);
   meta.metadata.timestamp = GetInt64(f, "metadata.timestamp", 0);
   meta.metadata.faiss_id = GetInt64(f, "metadata.faiss_id", 0);
@@ -155,6 +166,7 @@ std::map<std::string, std::string> MetadataToFields(const MemoryMetadata* meta)
       {"memory.content.model_response", meta->memory.content.model_response},
       {"memory.user.user_id.high", std::to_string(meta->memory.user.user_id.high)},
       {"memory.user.user_id.low", std::to_string(meta->memory.user.user_id.low)},
+      {"memory.user.user_key", meta->memory.user.user_key},
       {"memory.user.user_name", meta->memory.user.user_name},
       {"memory.user.user_content", meta->memory.user.user_content},
       {"memory.persona.persona_name", meta->memory.persona.persona_name},
@@ -167,6 +179,7 @@ std::map<std::string, std::string> MetadataToFields(const MemoryMetadata* meta)
       {"memory.emotion.similarity", std::to_string(meta->memory.emotion.similarity)},
       {"emotion_analysis.deltaEGO_analysis", meta->emotion_analysis.deltaEGO_analysis},
       {"metadata.session_id", meta->metadata.session_id.value_or("")},
+      {"metadata.scope_key", meta->metadata.scope_key.value_or("")},
       {"metadata.importance", std::to_string(meta->metadata.importance)},
       {"metadata.timestamp", std::to_string(meta->metadata.timestamp)},
       {"metadata.faiss_id", std::to_string(meta->metadata.faiss_id)},
@@ -236,6 +249,65 @@ net::awaitable<int64_t> RedisDbClient::NextId()
   co_await conn_->async_exec(req, resp, net::use_awaitable);
 
   co_return std::get<0>(resp).value();
+}
+
+net::awaitable<std::optional<std::string>>
+RedisDbClient::GetSessionId(const std::string &conversation_key)
+{
+  redis::request req;
+  req.push("HGET", kSessionsKey, conversation_key);
+
+  // HGET on a missing field is a RESP null — std::optional maps that to
+  // nullopt instead of failing the conversion.
+  redis::response<std::optional<std::string>> resp;
+  co_await conn_->async_exec(req, resp, net::use_awaitable);
+
+  co_return std::get<0>(resp).value();
+}
+
+net::awaitable<void>
+RedisDbClient::SetSessionId(const std::string &conversation_key, const std::string &session_id)
+{
+  redis::request req;
+  req.push("HSET", kSessionsKey, conversation_key, session_id);
+
+  co_await conn_->async_exec(req, redis::ignore, net::use_awaitable);
+}
+
+net::awaitable<void>
+RedisDbClient::PushRecentTurn(const std::string &recent_key, const std::string &turn_json,
+                              int max_stored, int ttl_seconds)
+{
+  std::string key = RecentKey(recent_key);
+  redis::request req;
+  req.push("LPUSH", key, turn_json);
+  req.push("LTRIM", key, 0, max_stored - 1);
+  req.push("EXPIRE", key, ttl_seconds);
+
+  co_await conn_->async_exec(req, redis::ignore, net::use_awaitable);
+}
+
+net::awaitable<std::vector<std::string>>
+RedisDbClient::GetRecentTurns(const std::string &recent_key, int count)
+{
+  if (count <= 0)
+    co_return std::vector<std::string>{};
+
+  redis::request req;
+  req.push("LRANGE", RecentKey(recent_key), 0, count - 1);
+
+  redis::response<std::vector<std::string>> resp;
+  co_await conn_->async_exec(req, resp, net::use_awaitable);
+
+  co_return std::move(std::get<0>(resp).value());
+}
+
+net::awaitable<void> RedisDbClient::ClearRecentTurns(const std::string &recent_key)
+{
+  redis::request req;
+  req.push("DEL", RecentKey(recent_key));
+
+  co_await conn_->async_exec(req, redis::ignore, net::use_awaitable);
 }
 
 nlohmann::json RedisDbClient::HealthCheck() const

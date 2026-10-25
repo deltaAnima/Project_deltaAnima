@@ -62,13 +62,26 @@ Each value is a float from -1.0 to +1.0.
 If hearing this makes you feel negative (hurt, afraid, angry, uneasy),
 Valence MUST be negative. Do NOT normalize to 0~1.
 
+0.0 is the resting state on every axis. Most everyday messages
+(greetings, questions, small talk, technical talk) barely move you:
+keep Arousal and Dominance near 0.0 for them, and let Valence carry
+whether the message felt slightly pleasant or unpleasant.
+Arousal is positive only when you feel stirred up (excited, alarmed,
+angry); it is negative when you feel calm, relaxed, or bored.
+Dominance is positive only when you feel in control or confident;
+it is negative when you feel small, pressured, or powerless.
+
 Format:
 {"Valence": <float -1.0~1.0>, "Arousal": <float>, "Dominance": <float>}
 
 Examples (YOUR reaction to what was said):
-someone threatens you      -> {"Valence": -0.6, "Arousal": 0.6, "Dominance": -0.5}
-someone insults you        -> {"Valence": -0.5, "Arousal": 0.5, "Dominance": 0.2}
-someone comforts you kindly -> {"Valence": 0.6, "Arousal": -0.2, "Dominance": 0.3})";
+someone threatens you       -> {"Valence": -0.6, "Arousal": 0.6, "Dominance": -0.5}
+someone insults you         -> {"Valence": -0.5, "Arousal": 0.5, "Dominance": 0.2}
+someone comforts you kindly -> {"Valence": 0.6, "Arousal": -0.2, "Dominance": 0.3}
+someone says hi             -> {"Valence": 0.1, "Arousal": 0.0, "Dominance": 0.0}
+someone asks a plain question -> {"Valence": 0.0, "Arousal": 0.0, "Dominance": 0.0}
+someone teases you lightly  -> {"Valence": -0.2, "Arousal": 0.1, "Dominance": -0.1}
+someone is bored with you   -> {"Valence": -0.3, "Arousal": -0.3, "Dominance": -0.2})";
 
 } // namespace
 
@@ -85,6 +98,18 @@ net::awaitable<VadEstimate> Llama5090Client::EstimateVad(std::string text) const
   auto endpoints = co_await resolver.async_resolve(host_, port_, net::use_awaitable);
   co_await stream.async_connect(endpoints, net::use_awaitable);
 
+  // SGLang specifics (vs. the llama.cpp server this used to target):
+  //  - response_format must be OpenAI's {"type":"json_schema",
+  //    "json_schema":{"name","schema"}} shape — SGLang silently ignores
+  //    llama.cpp's {"type":"json_object","schema":...}, so the schema
+  //    constraint was never actually applied.
+  //  - The served model is a Qwen3 reasoning model; with thinking on it
+  //    spends ~200 reasoning tokens (~3.5s vs ~0.4s) before a ~25-token
+  //    answer. enable_thinking=false turns that off per request.
+  //  - max_tokens caps a runaway generation; the answer itself is ~30.
+  //  - "model" is omitted on purpose: SGLang serves one model and
+  //    accepts requests without it, so swapping models doesn't need a
+  //    code change here.
   json body{
       {"messages",
        {
@@ -92,7 +117,11 @@ net::awaitable<VadEstimate> Llama5090Client::EstimateVad(std::string text) const
            {{"role", "user"}, {"content", text}},
        }},
       {"temperature", 0.0},
-      {"response_format", {{"type", "json_object"}, {"schema", VadJsonSchema()}}},
+      {"max_tokens", 64},
+      {"chat_template_kwargs", {{"enable_thinking", false}}},
+      {"response_format",
+       {{"type", "json_schema"},
+        {"json_schema", {{"name", "vad"}, {"schema", VadJsonSchema()}}}}},
   };
 
   http::request<http::string_body> req{http::verb::post, "/v1/chat/completions", 11};
@@ -164,9 +193,10 @@ nlohmann::json Llama5090Client::HealthCheck() const {
     beast::error_code ec;
     stream.socket().shutdown(tcp::socket::shutdown_both, ec);
 
-    // llama.cpp's /health: 200 {"status":"ok"} when ready, 503 while
-    // the model is still loading — both are "the server is there and
-    // talking HTTP", only the first counts as fully healthy.
+    // SGLang's /health: 200 (empty body) once the server is up, non-200
+    // while it's still starting or unhealthy — only 200 counts as
+    // healthy. (/health_generate would also run a real decode step;
+    // too heavy for a periodic check.)
     if (res.result() == http::status::ok) {
       return {{"status", "healthy"},
               {"message", "Class Llama5090Client -> GET /health: " + res.body()}};

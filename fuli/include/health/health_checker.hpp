@@ -10,7 +10,7 @@
 // As more clients get their own HealthCheck(), #include each one here
 // and add a const-reference member below, same as embedding_client_.
 // deltaEGO doesn't have its own HealthCheck() as such — Check5090Health()
-// forwards specifically to Carmen's Gebura_5090 (the 5090 llama.cpp
+// forwards specifically to Carmen's Gebura_5090 (the 5090 SGLang
 // fallback VAD estimator), since that client has no standalone instance
 // of its own in main.cpp to point at directly (see Carmen.hpp's comment
 // on Check5090Health for why openjev_client_ below doesn't need the same

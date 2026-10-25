@@ -61,6 +61,7 @@
           "high": 0,
           "low": 0
         },
+        "user_key": "discord:123456789012345678",
         "user_name": "Justin",
         "user_content": "tell me about the moon"
       },
@@ -126,6 +127,7 @@
     },
     "metadata": {
       "session_id": "<resolved session id>",
+      "scope_key": "discord:111111111111111111:222222222222222222",
       "importance": 0.5,
       "timestamp": 1760000000,
       "faiss_id": 456
@@ -133,6 +135,8 @@
     "query": {
       "request_query": {
         "user_name": "Justin",
+        "user_key": "discord:123456789012345678",
+        "scope_key": "discord:111111111111111111:222222222222222222",
         "user_input": "tell me about the moon",
         "context": null,
         "new_session": false,
@@ -144,12 +148,14 @@
             "top_k": 5,
             "min_score_threshold": 0.6,
             "memory_config": {
-              "session_id": null,
-              "user_id": null,
               "enable_time_decay": true,
               "recency_weight": 0.3,
               "importance_threshold": 0.5,
-              "reference_timestamp": null
+              "reference_timestamp": null,
+              "session_id": null,
+              "user_id": null,
+              "scope_key": null,
+              "scope": "user_in_scope"
             },
             "knowledge_config": {
               "collection_names": [

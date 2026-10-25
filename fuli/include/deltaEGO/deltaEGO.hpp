@@ -201,25 +201,33 @@ namespace deltaEGO {
     // but starting from raw text instead of an already-known (v,a,d) —
     // calls Carmen::whisper_from_Carmen first to derive the stimulus,
     // then feeds that into the same physics/search path process_stimulus
-    // uses. Defaults (see whisper_from_Carmen) mean the 5090 machine is
-    // the basis unless you explicitly opt into OpenJEV with use_jev=true.
+    // uses.
+    //
+    // mood_key: whose mood this moves — one independent mood per key
+    // (Orchestrator passes scope_key, so each channel has its own).
+    // emotion_policy: the request's config.emotion_policy. Its OCEAN/
+    // weight sections override the YAML for this call only; its backend
+    // flags (use_openjev, use_5090, fallback_to_5090, fallback_to_openjev)
+    // pick the VAD estimator. Absent flags mean the 5090/SGLang path
+    // alone, same as before emotion_policy was honored.
     // Returns an awaitable, not a plain std::string, because
     // whisper_from_Carmen is itself a coroutine (it calls out over the
     // network) — co_await only works inside another coroutine, so this
     // one has to be one too. Callers must co_await this, the same way
     // Orchestrator co_awaits EmbeddingClient::Embed.
     boost::asio::awaitable<nlohmann::json>
-    sephirothic_tree(std::string context, bool use_jev = false,
-                      bool fallback_to_5090 = false, bool use_5090 = true,
-                      bool fallback_to_jev = false);
+    sephirothic_tree(std::string context, std::string mood_key,
+                      nlohmann::json emotion_policy = nlohmann::json::object());
 
     // Loads the VAD term database (see VAD_DB/VAD.json) used for nearest
     // neighbor emotion-term lookup. Returns false on parse/IO failure.
     bool load_vad_db(const std::string &json_path);
 
-    // Feeds one VAD stimulus into the physics engine and returns the
-    // resulting state + analysis as a JSON string.
-    nlohmann::json process_stimulus(float v, float a, float d);
+    // Feeds one VAD stimulus into mood_key's mood and returns the
+    // resulting state + analysis as JSON. emotion_policy as above.
+    nlohmann::json process_stimulus(float v, float a, float d,
+                                    const std::string &mood_key,
+                                    const nlohmann::json &emotion_policy);
 
     // Re-reads the YAML config passed to the constructor.
     bool reload_config();

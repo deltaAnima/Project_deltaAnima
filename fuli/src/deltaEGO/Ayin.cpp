@@ -15,11 +15,17 @@
 #include <string>
 #include <vector>
 #include <algorithm>
+#include <chrono>
+#include <optional>
+#include <type_traits>
+#include <unordered_map>
 #include <numeric>
 #include <fstream>
 #include "Third_Party/json.hpp"
 #include <yaml-cpp/node/parse.h>
 #include <yaml-cpp/yaml.h>
+
+#include "config/constants.hpp"
 
 using json = nlohmann::json; // to read VAD.json
 
@@ -638,6 +644,77 @@ public:
   this->updatePhysicsWeights();
   }
 
+  // Overrides this engine's weights with a request's emotion_policy
+  // (same section/key names as the YAML — see
+  // main_orch_files/http_request_format.json). Only keys present in
+  // `policy` change; everything else keeps the YAML value, so a caller
+  // can send just {"OCEAN": {...}}. A present key with the wrong type
+  // throws (nlohmann type_error) rather than being silently skipped.
+  void applyPolicy(const json& policy)
+  {
+    auto section = [&policy](const char* name) -> const json& {
+      static const json empty = json::object();
+      return (policy.contains(name) && policy.at(name).is_object()) ? policy.at(name) : empty;
+    };
+    auto sub = [](const json& node, const char* name) -> const json& {
+      static const json empty = json::object();
+      return (node.contains(name) && node.at(name).is_object()) ? node.at(name) : empty;
+    };
+    auto set = [](const json& node, const char* key, auto& field) {
+      if (node.contains(key) && !node.at(key).is_null())
+        field = node.at(key).get<std::remove_reference_t<decltype(field)>>();
+    };
+
+    const json& oc = section("OCEAN");
+    set(oc, "Openness", ocean.Openness);
+    set(oc, "Conscientiousness", ocean.Conscientiousness);
+    set(oc, "Extraversion", ocean.Extraversion);
+    set(oc, "Agreeableness", ocean.Agreeableness);
+    set(oc, "Neuroticism", ocean.Neuroticism);
+
+    const json& aw = section("AnalysisWeights");
+    set(aw, "stabilityRadius", AnalysisConfigW.stabilityRadius);
+    set(aw, "weightA_stress", AnalysisConfigW.weightA_stress);
+    set(aw, "weightV_stress", AnalysisConfigW.weightV_stress);
+    set(aw, "weightV_reward", AnalysisConfigW.weightV_reward);
+    set(aw, "weightA_reward", AnalysisConfigW.weightA_reward);
+    set(aw, "dampening_factor", AnalysisConfigW.dampening_factor);
+    set(aw, "weight_k", AnalysisConfigW.weight_k);
+    set(aw, "theta_0", AnalysisConfigW.theta_0);
+
+    const json& fw = section("FormulaWeights");
+    const json& sens = sub(fw, "sensitivity");
+    set(sens, "pos_extraversion", CalPyhicsW.Sensitivity.pos_extraversion_sensi);
+    set(sens, "pos_openness", CalPyhicsW.Sensitivity.pos_openness_sensi);
+    set(sens, "neg_neuroticism", CalPyhicsW.Sensitivity.neg_neuroticism_sensi);
+    const json& res = sub(fw, "resistance");
+    set(res, "base", CalPyhicsW.resistance.base_resis);
+    set(res, "conscientiousness", CalPyhicsW.resistance.conscientiousness_resis);
+    set(res, "openness", CalPyhicsW.resistance.openness_resis);
+    set(res, "clamp_min", CalPyhicsW.resistance.clamp_min_resis);
+    set(res, "clamp_max", CalPyhicsW.resistance.clamp_max_resis);
+    const json& dec = sub(fw, "decay");
+    set(dec, "base", CalPyhicsW.decay.base_decay);
+    set(dec, "conscientiousness", CalPyhicsW.decay.conscientiousness_decay);
+    set(dec, "neuroticism", CalPyhicsW.decay.neuroticism_decay);
+    set(dec, "clamp_min", CalPyhicsW.decay.clamp_min_decay);
+    set(dec, "clamp_max", CalPyhicsW.decay.clamp_max_decay);
+
+    const json& adv = section("AdvancedConfig");
+    set(adv, "stress_threshold", AdvanConfig.stress_threshold_modu);
+    set(adv, "stress_sensitivity_factor", AdvanConfig.stress_sensitivity_factor_modu);
+    set(adv, "lability_threshold", AdvanConfig.lability_threshold_advcon);
+    set(adv, "lability_resistance_mult", AdvanConfig.lability_resistance_mult_modu);
+    set(adv, "reward_threshold", AdvanConfig.reward_threshold);
+    set(adv, "reward_decay_boost", AdvanConfig.reward_decay_boost_modu);
+    set(adv, "history_lookback_size", AdvanConfig.history_lookback_size);
+    set(adv, "dt_factor", AdvanConfig.dt_factor);
+    set(adv, "expression_r", AdvanConfig.expression_r);
+    set(adv, "epsilon", AdvanConfig.epsilon);
+
+    this->updatePhysicsWeights();
+  }
+
   // Main Orchestration: Analyze -> Modulate -> Update
   structs::AnalysisResult orchestrate(const std::vector<structs::VAD_Point>& history,
         const structs::VAD_Point& input_stimulus,
@@ -887,6 +964,13 @@ public:
  * emotionPhysics plus the VAD state/history it operates on, and exposes
  * one Update() call that runs a stimulus through the full
  * analyze->modulate->update physics pipeline.
+ *
+ * State is one Mood per mood_key (the caller passes scope_key, so each
+ * Discord channel / DM / Unity slot has its own mood) — a hash map, not
+ * an array, since keys are arbitrary strings that come and go. Moods
+ * are created lazily at the resting state and dropped after
+ * kMoodIdleSeconds without a message. In-memory only: a restart resets
+ * every mood to rest.
  */
 class Roland
 {
@@ -894,10 +978,8 @@ public:
   Roland(const std::string &config_path, float def_V, float def_A, float def_D,
          float def_radius)
       : physicsEngine(config_path),
-        current_state(structs::VAD_Point{def_V, def_A, def_D, def_radius}),
         default_state(structs::VAD_Point{def_V, def_A, def_D, def_radius})
   {
-    history.reserve(MAX_HISTORY_SIZE);
   }
 
   bool ReloadConfig()
@@ -922,30 +1004,76 @@ public:
     structs::AnalysisResult analysis;
   };
 
-  // Runs one stimulus through the physics engine and updates
-  // history/current_state in place.
-  UpdateResult Update(const structs::VAD_Point &input_stimulus)
+  // Runs one stimulus through the physics engine and updates that
+  // mood_key's history/current_state in place. A non-empty `policy`
+  // (the request's emotion_policy) is applied on top of a copy of the
+  // YAML-loaded engine for this call only — physicsEngine itself always
+  // stays the YAML defaults.
+  UpdateResult Update(const std::string &mood_key,
+                      const structs::VAD_Point &input_stimulus,
+                      const json &policy)
   {
-    UpdateResult result;
-    result.analysis = this->physicsEngine.orchestrate(
-        this->history, input_stimulus, this->current_state, this->default_state);
-
-    if (this->history.size() >= this->MAX_HISTORY_SIZE)
+    // Policy first: a malformed one throws here, before a mood entry is
+    // created for a request that's about to fail anyway.
+    std::optional<emotionPhysics> custom;
+    emotionPhysics *physics = &this->physicsEngine;
+    if (policy.is_object() && !policy.empty())
     {
-      this->history.erase(this->history.begin());
+      custom.emplace(this->physicsEngine);
+      custom->applyPolicy(policy);
+      physics = &*custom;
     }
-    this->history.push_back(this->current_state);
 
-    result.current_state = this->current_state;
+    this->SweepIdleMoods();
+
+    auto now = std::chrono::steady_clock::now();
+    auto [it, inserted] = this->moods_.try_emplace(mood_key, Mood{this->default_state, {}, now});
+    Mood &mood = it->second;
+    mood.last_active = now;
+    if (inserted)
+      std::cout << "[Roland] New mood for scope: " << (mood_key.empty() ? "-" : mood_key)
+                << " (" << this->moods_.size() << " active)" << std::endl;
+
+
+    UpdateResult result;
+    result.analysis = physics->orchestrate(
+        mood.history, input_stimulus, mood.current_state, this->default_state);
+
+    if (mood.history.size() >= this->MAX_HISTORY_SIZE)
+    {
+      mood.history.erase(mood.history.begin());
+    }
+    mood.history.push_back(mood.current_state);
+
+    result.current_state = mood.current_state;
     return result;
   }
 
 private:
+  struct Mood
+  {
+    structs::VAD_Point current_state;
+    std::vector<structs::VAD_Point> history;
+    std::chrono::steady_clock::time_point last_active;
+  };
+
+  // Amortized: a full scan every kSweepEvery updates, not every call.
+  void SweepIdleMoods()
+  {
+    if (++this->updates_since_sweep_ < kSweepEvery)
+      return;
+    this->updates_since_sweep_ = 0;
+
+    auto cutoff = std::chrono::steady_clock::now() - std::chrono::seconds(config::kMoodIdleSeconds);
+    std::erase_if(this->moods_, [cutoff](const auto &kv) { return kv.second.last_active < cutoff; });
+  }
+
   emotionPhysics physicsEngine;
-  std::vector<structs::VAD_Point> history;
-  structs::VAD_Point current_state;
   structs::VAD_Point default_state;
+  std::unordered_map<std::string, Mood> moods_;
+  int updates_since_sweep_ = 0;
   static constexpr size_t MAX_HISTORY_SIZE = 1000;
+  static constexpr int kSweepEvery = 256;
 };
 
 // ==========================================
@@ -975,9 +1103,11 @@ bool Ayin::reload_config()
   return roland_->ReloadConfig();
 }
 
-Ayin::ProcessResult Ayin::Process(const structs::VAD_Point &input_stimulus)
+Ayin::ProcessResult Ayin::Process(const std::string &mood_key,
+                                  const structs::VAD_Point &input_stimulus,
+                                  const nlohmann::json &policy)
 {
-  Roland::UpdateResult update = this->roland_->Update(input_stimulus);
+  Roland::UpdateResult update = this->roland_->Update(mood_key, input_stimulus, policy);
   auto [term, sim] = this->angela_->FindNearestTerm(update.current_state);
 
   ProcessResult result;
