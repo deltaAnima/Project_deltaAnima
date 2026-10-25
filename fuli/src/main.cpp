@@ -29,6 +29,7 @@
 #include "clients/openjev_client.hpp"
 #include "clients/redis_db_client.hpp"
 #include "config/constants.hpp"
+#include "config/memory_config.hpp"
 #include "deltaEGO/deltaEGO.hpp"
 #include "engine/gpu_faiss_engine.hpp"
 #include "health/health_checker.hpp"
@@ -217,10 +218,14 @@ int main()
                                        config::kRedisPort);
   redis_client.Run();
 
+  // Hot-reloaded on each request (see config::MemoryConfig), so the
+  // recent-turn window can be resized without a restart.
+  config::MemoryConfig memory_config(config::kMemoryConfigPath);
+
   // MemoryRetriever is the Faiss+Redis join layer — it's what
   // Orchestrator actually talks to for retrieval now, not
   // search_engine/redis_client directly.
-  pipeline::MemoryRetriever memory_retriever(search_engine, redis_client);
+  pipeline::MemoryRetriever memory_retriever(search_engine, redis_client, memory_config);
 
   // Orchestrator holds references to all of the above — none of them
   // may be destroyed before Orchestrator (and, transitively, before

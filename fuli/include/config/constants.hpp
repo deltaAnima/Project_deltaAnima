@@ -62,6 +62,9 @@ inline constexpr int kMoodIdleSeconds = 24 * 60 * 60;
 inline constexpr const char *kDeltaEgoConfigPath =
     "config/deltaEGO_default.yaml";
 inline constexpr const char *kVadDbPath = "include/VAD_DB/VAD.json";
+// Hot-reloaded on change (see config::MemoryConfig) — recent-turn
+// window size and retention live here, not as constants.
+inline constexpr const char *kMemoryConfigPath = "config/memory.yaml";
 
 // Where GpuFaissEngine's index gets saved/loaded (see
 // GpuFaissEngine::SaveToDisk — this becomes "{kFaissIndexPath}.faiss" and

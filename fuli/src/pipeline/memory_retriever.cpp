@@ -39,6 +39,14 @@ bool IsPrivateScope(const std::string &scope_key)
   return false;
 }
 
+// recent:{...} list suffix. "scope:"/"user:" prefixes keep a scope
+// literally named like some user_key from sharing that user's list.
+std::string RecentTurnsKey(const std::string &user_key,
+                           const std::optional<std::string> &scope_key)
+{
+  return scope_key ? "scope:" + *scope_key : "user:" + user_key;
+}
+
 } // namespace
 
 inline uint64_t MemoryRetriever::fmix64(uint64_t k)
@@ -118,8 +126,9 @@ UserId MemoryRetriever::MakeConversationId(const std::string& user_key,
 
 
 MemoryRetriever::MemoryRetriever(IVectorSearchEngine &search_engine,
-                                  clients::RedisDbClient &redis)
-    : search_engine_(search_engine), redis_(redis) {}
+                                  clients::RedisDbClient &redis,
+                                  config::MemoryConfig &memory_config)
+    : search_engine_(search_engine), redis_(redis), memory_config_(memory_config) {}
 
 net::awaitable<std::vector<RetrievedMemory>> MemoryRetriever::Retrieve(
     const std::vector<float> &query_vector, int top_k,
@@ -295,26 +304,123 @@ bool MemoryRetriever::delete_memory_buff_(const std::string& user_key,
   return true;
 }
 
-std::string MemoryRetriever::GetOrCreateSessionId(const std::string& user_key,
-                                                  const std::optional<std::string>& scope_key,
-                                                  bool force_new)
+net::awaitable<std::string>
+MemoryRetriever::GetOrCreateSessionId(const std::string& user_key,
+                                      const std::optional<std::string>& scope_key,
+                                      bool force_new)
 {
   UserId id = this->MakeConversationId(user_key, scope_key);
+  // Same (user_key, scope_key) pairing as MakeConversationId, but as the
+  // readable string itself — it's a Redis hash field, not a map key.
+  std::string conversation_key = user_key + '\x1f' + scope_key.value_or("");
 
   if (!force_new)
   {
     auto it = this->session_ids_.find(id);
     if (it != this->session_ids_.end())
-      return it->second;
+      co_return it->second;
+
+    std::optional<std::string> stored = co_await this->redis_.GetSessionId(conversation_key);
+
+    // Re-check after the co_await: another turn for this same
+    // conversation may have filled the cache while this one waited.
+    it = this->session_ids_.find(id);
+    if (it != this->session_ids_.end())
+      co_return it->second;
+
+    if (stored)
+    {
+      this->session_ids_[id] = *stored;
+      std::cout << "[INFO] Restored session " << *stored << " for user: " << user_key
+                << " (scope: " << scope_key.value_or("-") << ")\n";
+      co_return *stored;
+    }
   }
 
   boost::uuids::random_generator gen;
   std::string session_id = boost::uuids::to_string(gen());
 
+  // Cache first, then persist: a concurrent turn arriving during the
+  // HSET below already sees this id rather than minting a second one.
   this->session_ids_[id] = session_id; // insert or overwrite an existing (force_new) entry
+  co_await this->redis_.SetSessionId(conversation_key, session_id);
   std::cout << "[INFO] New session " << session_id << " created for user: " << user_key
             << " (scope: " << scope_key.value_or("-") << ")\n";
 
-  return session_id;
+  co_return session_id;
+}
+
+net::awaitable<std::vector<schemas::RecentTurn>>
+MemoryRetriever::GetRecentTurns(const std::string& user_key,
+                                const std::optional<std::string>& scope_key)
+{
+  std::vector<schemas::RecentTurn> turns;
+  int count = this->memory_config_.RecentTurns().count;
+  if (count <= 0)
+    co_return turns;
+
+  std::vector<std::string> raw;
+  try
+  {
+    raw = co_await this->redis_.GetRecentTurns(RecentTurnsKey(user_key, scope_key), count);
+  }
+  catch (const std::exception& e)
+  {
+    std::cerr << "[WARN] GetRecentTurns failed for user: " << user_key
+              << " (scope: " << scope_key.value_or("-") << "): " << e.what() << "\n";
+    co_return turns;
+  }
+
+  // Redis hands the list back newest first; the response wants a
+  // transcript, so walk it backwards.
+  turns.reserve(raw.size());
+  for (auto it = raw.rbegin(); it != raw.rend(); ++it)
+  {
+    nlohmann::json j = nlohmann::json::parse(*it, nullptr, /*allow_exceptions=*/false);
+    if (j.is_discarded() || !j.is_object())
+      continue; // one corrupt entry shouldn't cost the rest
+    turns.push_back(j.get<schemas::RecentTurn>());
+  }
+  co_return turns;
+}
+
+net::awaitable<void> MemoryRetriever::PushRecentTurn(const clients::MemoryMetadata& turn)
+{
+  schemas::RecentTurn entry;
+  entry.id = turn.metadata.faiss_id;
+  entry.user_key = turn.memory.user.user_key;
+  entry.user_name = turn.memory.user.user_name;
+  entry.user_input = turn.memory.content.user_input;
+  entry.persona_name = turn.memory.persona.persona_name;
+  entry.model_response = turn.memory.content.model_response;
+  entry.timestamp = turn.metadata.timestamp;
+
+  const config::RecentTurnsSettings& settings = this->memory_config_.RecentTurns();
+  try
+  {
+    co_await this->redis_.PushRecentTurn(
+        RecentTurnsKey(entry.user_key, turn.metadata.scope_key),
+        nlohmann::json(entry).dump(), settings.max_stored, settings.ttl_seconds);
+  }
+  catch (const std::exception& e)
+  {
+    std::cerr << "[WARN] PushRecentTurn failed for user: " << entry.user_key
+              << " (scope: " << turn.metadata.scope_key.value_or("-") << "): " << e.what()
+              << "\n";
+  }
+}
+
+net::awaitable<void> MemoryRetriever::ClearRecentTurns(const std::string& user_key,
+                                                       const std::optional<std::string>& scope_key)
+{
+  try
+  {
+    co_await this->redis_.ClearRecentTurns(RecentTurnsKey(user_key, scope_key));
+  }
+  catch (const std::exception& e)
+  {
+    std::cerr << "[WARN] ClearRecentTurns failed for user: " << user_key
+              << " (scope: " << scope_key.value_or("-") << "): " << e.what() << "\n";
+  }
 }
 } // namespace pipeline

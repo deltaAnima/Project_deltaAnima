@@ -62,13 +62,26 @@ Each value is a float from -1.0 to +1.0.
 If hearing this makes you feel negative (hurt, afraid, angry, uneasy),
 Valence MUST be negative. Do NOT normalize to 0~1.
 
+0.0 is the resting state on every axis. Most everyday messages
+(greetings, questions, small talk, technical talk) barely move you:
+keep Arousal and Dominance near 0.0 for them, and let Valence carry
+whether the message felt slightly pleasant or unpleasant.
+Arousal is positive only when you feel stirred up (excited, alarmed,
+angry); it is negative when you feel calm, relaxed, or bored.
+Dominance is positive only when you feel in control or confident;
+it is negative when you feel small, pressured, or powerless.
+
 Format:
 {"Valence": <float -1.0~1.0>, "Arousal": <float>, "Dominance": <float>}
 
 Examples (YOUR reaction to what was said):
-someone threatens you      -> {"Valence": -0.6, "Arousal": 0.6, "Dominance": -0.5}
-someone insults you        -> {"Valence": -0.5, "Arousal": 0.5, "Dominance": 0.2}
-someone comforts you kindly -> {"Valence": 0.6, "Arousal": -0.2, "Dominance": 0.3})";
+someone threatens you       -> {"Valence": -0.6, "Arousal": 0.6, "Dominance": -0.5}
+someone insults you         -> {"Valence": -0.5, "Arousal": 0.5, "Dominance": 0.2}
+someone comforts you kindly -> {"Valence": 0.6, "Arousal": -0.2, "Dominance": 0.3}
+someone says hi             -> {"Valence": 0.1, "Arousal": 0.0, "Dominance": 0.0}
+someone asks a plain question -> {"Valence": 0.0, "Arousal": 0.0, "Dominance": 0.0}
+someone teases you lightly  -> {"Valence": -0.2, "Arousal": 0.1, "Dominance": -0.1}
+someone is bored with you   -> {"Valence": -0.3, "Arousal": -0.3, "Dominance": -0.2})";
 
 } // namespace
 

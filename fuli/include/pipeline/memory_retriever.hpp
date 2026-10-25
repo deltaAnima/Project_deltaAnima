@@ -13,6 +13,7 @@
 #include <memory>
 
 #include "clients/redis_db_client.hpp"
+#include "config/memory_config.hpp"
 #include "engine/vector_search_engine.hpp"
 #include "schemas/rag_schemas.hpp"
 
@@ -77,7 +78,7 @@ class MemoryRetriever
   // class in this project that just borrows its dependencies (see
   // Orchestrator).
   MemoryRetriever(IVectorSearchEngine &search_engine,
-    clients::RedisDbClient &redis);
+    clients::RedisDbClient &redis, config::MemoryConfig &memory_config);
     
     // Runs a Faiss search, joins each candidate against Redis metadata,
     // drops anything outside config's user/scope policy or below
@@ -138,9 +139,39 @@ class MemoryRetriever
   // lookup and always mints + remembers a fresh id instead — the one
   // lever the caller has over an otherwise-permanent-per-conversation
   // session.
-  std::string GetOrCreateSessionId(const std::string& user_key,
-                                   const std::optional<std::string>& scope_key,
-                                   bool force_new = false);
+  //
+  // session_ids_ is only a cache: the id is also written to Redis
+  // (RedisDbClient::SetSessionId) and read back from there on a cache
+  // miss, so a restart doesn't hand every conversation a new id and
+  // filter out all of its earlier memories.
+  boost::asio::awaitable<std::string>
+  GetOrCreateSessionId(const std::string& user_key,
+                       const std::optional<std::string>& scope_key,
+                       bool force_new = false);
+
+  // The last RecentTurns().count turns where this conversation happens,
+  // oldest first — read on every context request alongside the
+  // embedding, so recency never depends on the Faiss search. Keyed by
+  // scope_key alone (falls back to user_key when there's no scope): a
+  // group channel's list holds every member's turns, and a DM/Unity
+  // slot is already one-person-per-scope, so the same rule covers both
+  // without branching per platform. A private scope's list is only ever
+  // read from that same scope, matching Retrieve()'s private-scope rule.
+  //
+  // Never throws: a Redis failure here logs and returns no recent turns
+  // rather than failing the whole request.
+  boost::asio::awaitable<std::vector<schemas::RecentTurn>>
+  GetRecentTurns(const std::string& user_key, const std::optional<std::string>& scope_key);
+
+  // Appends a saved turn (Store()'s metadata, model_response filled in)
+  // to its conversation's recent list, trimmed to max_stored. Same
+  // never-throws rule as GetRecentTurns.
+  boost::asio::awaitable<void> PushRecentTurn(const clients::MemoryMetadata& turn);
+
+  // new_session: the caller asked for a fresh start, so last session's
+  // turns must not come back as "recent". Same never-throws rule.
+  boost::asio::awaitable<void> ClearRecentTurns(const std::string& user_key,
+                                                const std::optional<std::string>& scope_key);
 
 private:
   inline uint64_t fmix64(uint64_t k);
@@ -153,6 +184,7 @@ private:
 
   IVectorSearchEngine &search_engine_;
   clients::RedisDbClient &redis_;
+  config::MemoryConfig &memory_config_;
 
   std::unordered_map<std::string, UserId> name_to_id_;
   struct ConversationBuffer

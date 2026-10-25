@@ -60,6 +60,11 @@ public:
   HandleContextCancelRequest(schemas::FuliContextCancelRequest req);
 
 private:
+  // [2]'s embedding half: the caller's dense_vector if it sent one,
+  // otherwise TEI. Logs and rethrows on failure.
+  boost::asio::awaitable<std::vector<float>>
+  EmbedQuery(const schemas::FuliContextRequest &req);
+
   clients::EmbeddingClient &embedder_;
   MemoryRetriever &memory_retriever_;
   deltaEGO::deltaEGO &emotion_engine_;

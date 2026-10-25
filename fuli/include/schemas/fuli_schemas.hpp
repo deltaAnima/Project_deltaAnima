@@ -8,7 +8,8 @@
 //       "user_input": ..., "context": ...,
 //       "config": {"rag_policy": {...}, "emotion_policy": {...}},
 //   }
-//   response.get("hits", [...]), response.get("emotion")
+//   response.get("hits", [...]), response.get("recent_turns", [...]),
+//   response.get("emotion")
 //
 // See main_orch_files/http_request_format.json for a full worked example
 // of the wire format, and RAGHandler.py / FuliHandler.py for how the
@@ -130,8 +131,48 @@ struct MemoryHit {
   std::string model_response;
 };
 
+// One of a conversation's latest turns, straight from the recent:{key}
+// list in Redis (see MemoryRetriever::GetRecentTurns) — returned in
+// time order regardless of similarity, so "what was just said" never
+// depends on winning the Faiss search. id is the turn's memory id
+// (0 if Store() failed for it), the same id a MemoryHit would carry.
+// user_key/user_name say who spoke: a group channel's list holds every
+// member's turns.
+struct RecentTurn {
+  int64_t id = 0;
+  std::string user_key;
+  std::string user_name;
+  std::string user_input;
+  std::string persona_name;
+  std::string model_response;
+  int64_t timestamp = 0;
+};
+
+inline void to_json(json &j, const RecentTurn &t) {
+  j = json{{"id", t.id},
+           {"user_key", t.user_key},
+           {"user_name", t.user_name},
+           {"user_input", t.user_input},
+           {"persona_name", t.persona_name},
+           {"model_response", t.model_response},
+           {"timestamp", t.timestamp}};
+}
+inline void from_json(const json &j, RecentTurn &t) {
+  t.id = j.value("id", int64_t{0});
+  t.user_key = j.value("user_key", std::string());
+  t.user_name = j.value("user_name", std::string());
+  t.user_input = j.value("user_input", std::string());
+  t.persona_name = j.value("persona_name", std::string());
+  t.model_response = j.value("model_response", std::string());
+  t.timestamp = j.value("timestamp", int64_t{0});
+}
+
 struct FuliContextResponse {
   std::vector<MemoryHit> hits;
+
+  // Oldest first, so it reads as a transcript. Turns listed here are
+  // removed from `hits` — the caller never sees the same turn twice.
+  std::vector<RecentTurn> recent_turns;
 
   // deltaEGO::process_stimulus() already returns a fully-formed JSON
   // string (current VAD state + full physics analysis breakdown). Rather
@@ -153,6 +194,7 @@ inline void to_json(json &j, const FuliContextResponse &r)
                           {"user_input", h.user_input},
                           {"model_response", h.model_response}});
   }
+  j["recent_turns"] = r.recent_turns;
 
   // allow_exceptions=false makes json::parse return a "discarded" value
   // instead of throwing if emotion_json somehow isn't valid JSON — we'd

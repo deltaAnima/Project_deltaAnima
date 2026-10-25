@@ -1,0 +1,15 @@
+# Memory settings for orchestrator_server. Re-read whenever this file
+# changes on disk (checked at most once per request) — edit and save,
+# no restart needed.
+
+RecentTurns:
+  # How many of the latest turns /character/context returns in
+  # recent_turns, oldest first. 0 turns the feature off.
+  count: 10
+  # How many turns Redis keeps per conversation. Raising `count` up to
+  # this takes effect immediately; past it only fills in as new turns
+  # arrive. `count` is clamped to this.
+  max_stored: 50
+  # A conversation untouched for this long has its recent turns
+  # dropped by Redis (EXPIRE). 7 days.
+  ttl_seconds: 604800

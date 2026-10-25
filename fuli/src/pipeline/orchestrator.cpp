@@ -1,12 +1,15 @@
 #include "pipeline/orchestrator.hpp"
 #include <chrono>
 #include <iostream>
+#include <unordered_set>
+#include <boost/asio/experimental/awaitable_operators.hpp>
 #include <boost/format.hpp>
 #include <boost/stacktrace.hpp>
 
 namespace pipeline {
 
 namespace net = boost::asio;
+using namespace boost::asio::experimental::awaitable_operators;
 
 namespace {
 
@@ -92,44 +95,23 @@ Orchestrator::HandleContextRequest(schemas::FuliContextRequest reqest)
   // session regardless of whatever (if anything) the caller passed in
   // rag_policy.memory_config.session_id.
   std::string session_id =
-      this->memory_retriever_.GetOrCreateSessionId(reqest.user_key, reqest.scope_key,
-                                                   reqest.new_session);
+      co_await this->memory_retriever_.GetOrCreateSessionId(reqest.user_key, reqest.scope_key,
+                                                            reqest.new_session);
 
-  // --- [2] Embedding ---------------------------------------------------
-  // dense_vector is only ever set when something upstream already
-  // computed an embedding. FuliHandler's docstring is explicit that this
-  // is normally null: "Fuli embeds the input itself" — i.e. WE are
-  // expected to call TEI here, which is exactly what the else branch
-  // does. The dense_vector path mainly exists for testing (see the
-  // conversation's curl example that bypassed TEI entirely) and for any
-  // future caller that genuinely already has a vector on hand.
-  std::vector<float> query_vector;
-  if (reqest.rag_policy.dense_vector.has_value())
-  {
-    query_vector = *reqest.rag_policy.dense_vector;
-  }
-  else
-  {
-    // Rethrown after logging — everything downstream (search, response
-    // assembly) depends on query_vector, so there's no sensible
-    // degraded-but-still-succeeds path if this fails; the request
-    // should still end in a 500 (via http_server.cpp's generic catch),
-    // just with this structured log/stacktrace on the way out now.
-    try
-    {
-      query_vector = co_await this->embedder_.Embed(reqest.user_input);
-    }
-    catch (const std::exception &e)
-    {
-      LogException("HandleContextRequest (Embed)", e);
-      throw;
-    }
-    catch (...)
-    {
-      LogException("HandleContextRequest (Embed)");
-      throw;
-    }
-  }
+  // new_session is an explicit fresh start — last session's turns must
+  // not come back as "recent". Cleared before the read below, not in
+  // parallel with it.
+  if (reqest.new_session)
+    co_await this->memory_retriever_.ClearRecentTurns(reqest.user_key, reqest.scope_key);
+
+  // --- [2] Embedding + recent turns ---------------------------------------
+  // Independent of each other, so the recent-turn LRANGE rides along
+  // with the TEI call instead of adding a round trip after it. An
+  // Embed() failure still fails the request (EmbedQuery rethrows);
+  // GetRecentTurns never throws, it just comes back empty.
+  auto [query_vector, recent_turns] = co_await (
+      this->EmbedQuery(reqest) &&
+      this->memory_retriever_.GetRecentTurns(reqest.user_key, reqest.scope_key));
 
   // --- [3] First-pass retrieval -----------------------------------------
   // MemoryRetriever runs the Faiss search and joins each candidate
@@ -199,10 +181,21 @@ Orchestrator::HandleContextRequest(schemas::FuliContextRequest reqest)
   // (chunk expansion) are all no-ops here — MemoryRetriever's already-
   // filtered hits pass straight through unchanged. min_score_threshold is
   // parsed but not enforced yet either.
+  // A turn already in recent_turns is dropped from hits — the caller
+  // would otherwise see the same exchange twice, once in order and once
+  // out of it.
+  std::unordered_set<int64_t> recent_ids;
+  for (const auto &turn : recent_turns)
+    if (turn.id != 0)
+      recent_ids.insert(turn.id);
+
   schemas::FuliContextResponse resp;
+  resp.recent_turns = std::move(recent_turns);
   resp.hits.reserve(retrieved.size());
   for (const auto &mem : retrieved) 
   {
+    if (recent_ids.contains(mem.id))
+      continue;
     schemas::MemoryHit hit;
     hit.id = mem.id;
     hit.score = mem.distance;
@@ -251,6 +244,40 @@ Orchestrator::HandleContextRequest(schemas::FuliContextRequest reqest)
 
   buffer_guard.dismissed = true;
   co_return resp;
+}
+
+net::awaitable<std::vector<float>>
+Orchestrator::EmbedQuery(const schemas::FuliContextRequest &reqest)
+{
+  // dense_vector is only ever set when something upstream already
+  // computed an embedding. FuliHandler's docstring is explicit that this
+  // is normally null: "Fuli embeds the input itself" — i.e. WE are
+  // expected to call TEI here, which is exactly what the else branch
+  // does. The dense_vector path mainly exists for testing (see the
+  // conversation's curl example that bypassed TEI entirely) and for any
+  // future caller that genuinely already has a vector on hand.
+  if (reqest.rag_policy.dense_vector.has_value())
+    co_return *reqest.rag_policy.dense_vector;
+
+  // Rethrown after logging — everything downstream (search, response
+  // assembly) depends on query_vector, so there's no sensible
+  // degraded-but-still-succeeds path if this fails; the request
+  // should still end in a 500 (via http_server.cpp's generic catch),
+  // just with this structured log/stacktrace on the way out now.
+  try
+  {
+    co_return co_await this->embedder_.Embed(reqest.user_input);
+  }
+  catch (const std::exception &e)
+  {
+    LogException("HandleContextRequest (Embed)", e);
+    throw;
+  }
+  catch (...)
+  {
+    LogException("HandleContextRequest (Embed)");
+    throw;
+  }
 }
 
 boost::asio::awaitable<nlohmann::json>
@@ -304,6 +331,11 @@ Orchestrator::HandleContextSaveRequest(schemas::FuliContextSaveRequest reqest)
   {
     LogException("HandleContextSaveRequest (Store)");
   }
+
+  // Outside the Store() try on purpose: a turn whose embedding/Faiss
+  // write failed is still what was just said, so it still belongs in
+  // the recent list (with id 0, since it never got one).
+  co_await this->memory_retriever_.PushRecentTurn(*current_mem.second);
 
   // Built via
   // MemoryMetadata's to_json (see redis_db_client.hpp) regardless of

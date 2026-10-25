@@ -285,6 +285,27 @@ public:
   // even across restarts (the counter lives in Redis, not in-process).
   boost::asio::awaitable<int64_t> NextId();
 
+  // HGET/HSET on the single "sessions" hash — one field per
+  // conversation (see MemoryRetriever::GetOrCreateSessionId), so session
+  // ids survive a server restart instead of living only in-process.
+  // GetSessionId returns std::nullopt if that conversation has none yet.
+  boost::asio::awaitable<std::optional<std::string>>
+  GetSessionId(const std::string &conversation_key);
+  boost::asio::awaitable<void> SetSessionId(const std::string &conversation_key,
+                                            const std::string &session_id);
+
+  // recent:{recent_key} LIST, newest at the head — the last few turns of
+  // a conversation in order, independent of whether they'd ever win a
+  // Faiss similarity search (see MemoryRetriever::GetRecentTurns).
+  // Push is LPUSH + LTRIM to max_stored + EXPIRE ttl in one round trip.
+  // Get returns up to `count` raw JSON entries, newest first.
+  boost::asio::awaitable<void> PushRecentTurn(const std::string &recent_key,
+                                              const std::string &turn_json,
+                                              int max_stored, int ttl_seconds);
+  boost::asio::awaitable<std::vector<std::string>>
+  GetRecentTurns(const std::string &recent_key, int count);
+  boost::asio::awaitable<void> ClearRecentTurns(const std::string &recent_key);
+
   // Blocking (same pattern as EmbeddingClient::HealthCheck, so
   // HealthChecker::CheckAll can std::async both the same way) — a real
   // PING through a throwaway connection, not just a TCP connect, so it
