@@ -11,12 +11,16 @@ not something we run locally before sending.
 
 from pathlib import Path
 from typing import Any, Dict, Optional
+import logging
+import time
 import requests
 
 import config
 from Persona.RAGHandler import Remembrance
 from Persona.EmotionHandler import Enigmata
 from Persona.RAG_schemas import CharacterContextResponse, ContextSaveResponse
+
+logger = logging.getLogger(__name__)
 
 
 class FuliHandler:
@@ -108,14 +112,32 @@ class FuliHandler:
                 "emotion_policy": emotion_policy or self._default_emotion_policy_raw(),
             },
         }
+        started = time.perf_counter()
         raw_response = self._post("/character/context", payload)
         result = CharacterContextResponse.model_validate(raw_response)
+        if logger.isEnabledFor(logging.DEBUG):
+            self._debug_context(user_key, scope_key, result, time.perf_counter() - started)
 
         return {
             "memories": self.rag_handler.flatten_hits(result.hits, user_name),
             "emotion": [result.emotion.emotion_term],
             "emotion_state": result.emotion,
         }
+
+    @staticmethod
+    def _debug_context(user_key: str, scope_key: str, result: CharacterContextResponse, seconds: float) -> None:
+        """DEBUG trace of one /character/context answer: what Fuli remembered and how it reads the mood."""
+        emotion = result.emotion
+        logger.debug(
+            "Fuli context for %s (scope %s) in %.0f ms: %d memory hit(s), emotion=%s (%s)  similarity=%s",
+            user_key, scope_key, seconds * 1000, len(result.hits),
+            emotion.emotion_term, emotion.current_state, emotion.similarity,
+        )
+        for hit in result.hits:
+            logger.debug(
+                "  memory #%s  score=%.3f\n  user : %s\n  reply: %s",
+                hit.id, hit.score, hit.user_input[:300], hit.model_response[:300],
+            )
 
     def save_context_memory(self, user_key: str, scope_key: str, user_name: str, persona_response: str) -> ContextSaveResponse:
         """
