@@ -7,6 +7,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from dotenv import load_dotenv
 from typing import Optional
+import argparse
 import asyncio
 import logging
 import time
@@ -296,4 +297,42 @@ async def health():
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Reminh orchestrator")
+    parser.add_argument(
+        "--tui",
+        action="store_true",
+        help="run with the terminal dashboard (queue, downstream servers, live log, reload hotkeys); "
+             "needs the optional textual package, see requirements-tui.txt",
+    )
+    parser.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        help="with --tui: start with verbose output on (this project's DEBUG records: prompts, Fuli hits and "
+             "emotion, VL timings and token usage); press v in the dashboard to switch it",
+    )
+    args = parser.parse_args()
+    if args.verbose and not args.tui:
+        parser.error("-v/--verbose only applies together with --tui")
+
+    if args.tui:
+        # lazy import: a plain headless run must never depend on textual
+        try:
+            from tui import run_with_tui
+        except ModuleNotFoundError as e:
+            if (e.name or "").split(".")[0] != "textual":
+                raise
+            raise SystemExit("--tui needs the optional 'textual' package: pip install -r requirements-tui.txt")
+        # hands uvicorn to the dashboard so both share one event loop; see tui.py
+        raise SystemExit(
+            run_with_tui(
+                app,
+                orchestrator=orchestrator,
+                edge=edge,
+                reload_prompt=reload_prompts,
+                reload_emotion=reload_emotion_params,
+                verbose=args.verbose,
+            )
+        )
+
     uvicorn.run(app, host=config.server.host, port=config.server.port)
