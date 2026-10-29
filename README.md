@@ -24,7 +24,7 @@ That turned out to be as much a systems problem as a model problem: routing audi
 Every time you say something to Reminh, one "turn" happens:
 
 1. **Listen** — your voice is sent to a speech-to-text server and turned into text.
-2. **Remember** — the text is turned into a vector and used to search Reminh's memory of past conversations with you.
+2. **Remember** — the text is turned into a vector and used to search Reminh's memory of past conversations with you. Her last few exchanges in the same conversation are also replayed, so she keeps track of what was just said.
 3. **Feel** — Reminh's emotion engine estimates how *she* would feel hearing this, and moves her current mood accordingly. How strongly she reacts, and how quickly she calms down, depends on her personality.
 4. **Think** — her memories and current mood are written into the prompt, and a language model generates her reply.
 5. **Save** — the exchange (what you said + what she said + how she felt) is stored as a new memory.
@@ -75,6 +75,7 @@ The speech (STT/TTS) servers, model servers, and Unity client live outside this 
 flowchart LR
     subgraph Frontend
         U["Unity Client<br/>(role: client)"]
+        D["Discord bot"]
     end
 
     subgraph Edge["delta-edge (Rust)"]
@@ -91,7 +92,7 @@ flowchart LR
         C["Character<br/>(Reminh)"]
     end
 
-    VL["VL model<br/>llama.cpp-compatible server<br/>/v1/chat/completions"]
+    VL["VL model<br/>SGLang server<br/>/v1/chat/completions"]
 
     subgraph Fuli["Fuli (C++)"]
         F["HTTP server<br/>/character/*"]
@@ -101,10 +102,11 @@ flowchart LR
 
     R[("Redis<br/>memory metadata")]
     TEI["TEI bge-m3<br/>embedding server"]
-    L5090["5090 llama.cpp<br/>(VAD estimation)"]
-    JEV["OpenJEV NLI<br/>(optional)"]
+    L5090["5090 SGLang<br/>(VAD estimation)"]
+    LAYA["Laya Serve<br/>(VAD estimation)"]
 
     U <-- "WS: text/binary" --> H
+    D -- "HTTP POST /discord/chat" --> O
     H <-- "WS" --> O
     H <-- "WS" --> TTS
     H -- "HTTP POST (WAV)" --> STT
@@ -115,8 +117,8 @@ flowchart LR
     F --> FA
     F --> R
     F -- "/embed" --> TEI
-    EGO -- "/v1/chat/completions" --> L5090
-    EGO -. "/classify" .-> JEV
+    EGO -- "/v1/systemone" --> LAYA
+    EGO -. "/v1/chat/completions<br/>(fallback)" .-> L5090
 ```
 
 **Key design points**
@@ -124,7 +126,8 @@ flowchart LR
 - **Hub-and-spoke**: the Client, Orchestrator, TTS (and optionally STT) never connect to each other directly. They all connect to `delta-edge` over WebSocket. Each connection first registers its **role**, and every message after that is routed statically by the `(sender role, message type)` pair.
 - **Orchestrator ↔ Fuli is HTTP/JSON**: two calls per turn. One *before* inference to fetch memories and emotion (`/character/context`), and one *after* inference to store what the character actually said (`/character/context_memory`).
 - **Heavy work lives in Fuli**: embedding, vector search, and emotion computation all happen on the C++ side. The Python side is a thin, stateless layer that only keeps per-character policy (RAG settings, OCEAN personality values) in YAML and sends it along with each request.
-- **GPU-bound work is serialized on purpose**: the VL model runs as a single instance on a single GPU, so the Orchestrator processes jobs with one worker to avoid contention and out-of-memory failures.
+- **GPU-bound work is serialized on purpose**: the VL model runs as a single instance on a single GPU, so the Orchestrator processes jobs with one worker to avoid contention and out-of-memory failures. Unity (over the edge) and Discord (over HTTP) share that one queue.
+- **Who and where, not just who**: every turn carries a `user_key` (who is talking) and a `scope_key` (where: a Unity scene, a Discord channel, a DM). Fuli uses the pair to separate memories, sessions, and moods, so Reminh can feel differently in different channels and never leaks a DM into a group chat (see [6.3](#63-identity-user_key-and-scope_key)).
 
 ---
 
@@ -146,7 +149,7 @@ deltaAnima runs on a small self-hosted cluster rather than a single machine:
 | Metric | Before | After | What changed |
 |---|---|---|---|
 | TTS real-time factor (RTX 3090) | > 1.0 (slower than real time) | ≈ 0.4 | Moved the node from Windows 11 + WSL2 to native Ubuntu 24.04; WSL2's WDDM overhead was the root cause (~3× throughput) |
-| Emotion (VAD) inference latency | ~170 ms (VL model on RTX 5090) | ~30 ms (OpenJEV on RTX 3090, experimental) | Early port of emotion scoring to a small dedicated classifier. Fast, but output quality is not yet stable, so the 5090 path remains the default |
+| Emotion (VAD) inference latency | ~170 ms (VL model on RTX 5090) | ~30 ms (OpenJEV on RTX 3090, experimental) | Early port of emotion scoring to a small dedicated classifier. Fast, but output quality was not stable enough; this path has since been replaced by Laya (see [8.1](#81-carmen--extracting-a-stimulus-from-text)) |
 
 ### End-to-end voice latency
 
@@ -181,21 +184,21 @@ sequenceDiagram
 
     U->>E: {"type":"audio_start"}
     U->>E: binary PCM16 chunks...
-    U->>E: {"type":"audio_end"}
+    U->>E: {"type":"audio_end", payload: {user_name, platform, ...}}
     E->>S: POST (WAV / multipart)
     S-->>E: {"text": "..."}
     E-->>U: stt_result (for display)
-    E->>O: user_input {text, source:"stt"}
+    E->>O: user_input {text, source:"stt", user_name, platform, ...}
 
-    Note over O: create InferenceJob → asyncio.Queue
-    O->>F: POST /character/context<br/>{user_name, user_input, new_session, config}
-    Note over F: embed → Faiss search → Redis join<br/>update emotion via deltaEGO<br/>open per-user memory buffer
-    F-->>O: {hits[], emotion}
-    Note over O: inject memories + mood into system prompt
+    Note over O: build user_key / scope_key<br/>create InferenceJob → asyncio.Queue
+    O->>F: POST /character/context<br/>{user_key, scope_key, user_name, user_input, config}
+    Note over F: embed → Faiss search → Redis join<br/>read recent turns · update this scope's mood<br/>open per-conversation memory buffer
+    F-->>O: {hits[], recent_turns[], emotion}
+    Note over O: inject memories + mood into system prompt<br/>replay recent turns as chat history
     O->>V: POST /v1/chat/completions
     V-->>O: character response text
-    O->>F: POST /character/context_memory<br/>{user_name, persona_name, persona_response}
-    Note over F: embed (input+response) → add to Faiss<br/>store Redis mem:{id}, release buffer
+    O->>F: POST /character/context_memory<br/>{user_key, scope_key, persona_name, persona_response}
+    Note over F: embed (input+response) → add to Faiss<br/>store Redis mem:{id} + recent list, release buffer
     F-->>O: saved memory record
     O->>E: inference_result
     E->>U: inference_result
@@ -205,7 +208,7 @@ sequenceDiagram
     E->>U: tts_start / binary audio / tts_done
 ```
 
-> For text input, the Client skips steps 1–7 and sends `{"type":"user_input","payload":{"text":"..."}}` directly.
+> For text input, the Client skips steps 1–7 and sends a `user_input` message directly (see [6.4](#64-messages-and-http-api)). Discord turns skip the edge entirely: the bot calls `POST /discord/chat` and gets the reply in the HTTP response.
 
 ---
 
@@ -271,9 +274,11 @@ When the `STT_URL` environment variable is set, audio from a `client` is **buffe
 
 1. `audio_start` → clear the per-connection buffer
 2. Binary frames (PCM16 LE mono) → appended to the buffer (capped at `STT_MAX_SECONDS`; anything beyond is dropped)
-3. `audio_end` → wrap the buffer in a WAV header and POST it to `STT_URL` (in a separate task)
+3. `audio_end` → wrap the buffer in a WAV header and POST it to `STT_URL` (in a separate task). The client puts its identity (`user_name`, `platform`, `platform_user_id`, `scope_id`) in this message's `payload`.
 4. Extract the transcript from the response (`{"text"}`, `{"transcript"}`, `{"result"}`, or a plain string are all accepted)
-5. Send `stt_result` back to the requesting client and `user_input {source:"stt"}` to the Orchestrator. On failure, the client gets an `error` message.
+5. Send `stt_result` back to the requesting client and `user_input {source:"stt"}` to the Orchestrator, with the identity fields from `audio_end` copied in. On failure, the client gets an `error` message.
+
+> The Orchestrator rejects any `user_input` without a `user_name`, so a voice client that omits its identity on `audio_end` gets an error instead of a reply.
 
 Without `STT_URL`, audio is routed to a WebSocket `stt` peer as before.
 
@@ -288,8 +293,9 @@ flowchart TB
     subgraph server.py
         L["lifespan()<br/>connect edge · start worker · check downstream"]
         M["on_edge_message()<br/>user_input / stt_result → InferenceJob"]
-        HTTP["FastAPI<br/>GET /health<br/>POST /discord/chat (not implemented)"]
+        HTTP["FastAPI<br/>POST /discord/chat → InferenceJob<br/>POST /character/*/reload · GET /health"]
     end
+    TUI["tui.py<br/>terminal dashboard (--tui)"]
 
     EC["EdgeClient<br/>(websockets)"]
     Q[["asyncio.Queue (InferenceJob)"]]
@@ -306,6 +312,9 @@ flowchart TB
     VLH["VisionLangHandler<br/>HTTP → VL model"]
 
     EC --> M --> Q --> W
+    HTTP --> Q
+    W -- "Discord: reply future" --> HTTP
+    TUI -. "snapshot() · logs" .-> W
     W --> CH
     CH --> PH
     CH --> FH
@@ -319,16 +328,17 @@ flowchart TB
 
 | File | Description |
 |---|---|
-| [`server.py`](orchestrator/server.py) | Entry point. Initializes handlers, connects to the edge, turns messages into `InferenceJob`s, hosts the FastAPI app |
-| [`orchestrator.py`](orchestrator/orchestrator.py) | Job queue with a **single worker**. The VL model is one instance on one GPU, so jobs run strictly one at a time to avoid contention and OOM |
-| [`edge_client.py`](orchestrator/edge_client.py) | WebSocket client for the edge hub (`register` → listen loop, `send_routed`) |
-| [`VisionLangHandler.py`](orchestrator/VisionLangHandler.py) | Client for a llama.cpp-compatible server. Checks the model is loaded via `/v1/models`, runs inference via `/v1/chat/completions` |
+| [`server.py`](orchestrator/server.py) | Entry point. Initializes handlers, connects to the edge, turns edge messages and Discord HTTP requests into `InferenceJob`s, hosts the FastAPI app |
+| [`orchestrator.py`](orchestrator/orchestrator.py) | Job queue with a **single worker**. The VL model is one instance on one GPU, so jobs run strictly one at a time to avoid contention and OOM. Edge jobs are answered over the edge; Discord jobs are answered through a future the HTTP handler is awaiting |
+| [`edge_client.py`](orchestrator/edge_client.py) | WebSocket client for the edge hub (`register` → listen loop, `send_routed`). Reconnects with backoff and re-registers when the hub drops the link |
+| [`VisionLangHandler.py`](orchestrator/VisionLangHandler.py) | Client for an SGLang server (OpenAI-compatible API). Checks the model is loaded and can read images via `/get_model_info`, runs inference via `/v1/chat/completions` with optional thinking mode, replayed history, and one image per turn |
+| [`tui.py`](orchestrator/tui.py) | Optional terminal dashboard (`python server.py --tui`): queue and in-flight job, downstream server status, live log, reload hotkeys, and a verbose view (`v` key / `-v`) with prompts, Fuli hits, token usage, and latency |
 | [`config.py`](orchestrator/config.py) / [`config.yaml`](orchestrator/config.yaml) | Loader for every environment-specific value (IPs, ports, model). Runs a TCP-level liveness sweep at startup (`test_servers`) |
-| [`Persona/Character.py`](orchestrator/Persona/Character.py) | One character = prompt + RAG policy + emotion policy + VL handler. **Infers sessions** (first request, or a request after 30 minutes of silence, starts a new session) |
+| [`Persona/Character.py`](orchestrator/Persona/Character.py) | One character = prompt + RAG policy + emotion policy + VL handler. Picks the prompt template by platform and turns Fuli's recent turns into chat history |
 | [`Persona/FuliHandler.py`](orchestrator/Persona/FuliHandler.py) | HTTP transport to Fuli. Responses are validated against Pydantic schemas (`RAG_schemas.py`) |
 | [`Persona/PromptHandler.py`](orchestrator/Persona/PromptHandler.py) | Prompt templates for Unity/TTS, Discord text, and VAD inference |
 | [`Persona/RAGHandler.py`](orchestrator/Persona/RAGHandler.py) | Turns the character's RAG policy into a `RAGQueryOrder`; flattens hits into `"<name>: <line>"` form |
-| [`Persona/EmotionHandler.py`](orchestrator/Persona/EmotionHandler.py) | Loads OCEAN/physics weights and the emotion backend flags (`use_5090`, `use_openjev`, `fallback_to_5090`) |
+| [`Persona/EmotionHandler.py`](orchestrator/Persona/EmotionHandler.py) | Loads OCEAN/physics weights and the emotion backend flags (`use_laya`, `use_5090`, `fallback_to_5090`). Sent with every request, so a reload takes effect on the next turn |
 | [`Server/Pydantic_frame.py`](orchestrator/Server/Pydantic_frame.py) | Pydantic models for HTTP requests/responses |
 
 ### 6.2 Adding a character
@@ -345,19 +355,49 @@ Persona/Config/
     └── physics_weights.yaml        # OCEAN personality + emotion physics weights
 ```
 
-`Character.__reload__(data)` re-reads all three configs from disk at runtime, or hot-swaps them in memory with a dict of the same shape (a shape mismatch raises).
+`Character.__reload__(data)` re-reads all three configs from disk at runtime, or hot-swaps them in memory with a dict of the same shape (a shape mismatch raises). The prompt and emotion configs can also be reloaded over HTTP or from the TUI (see 6.4).
 
-### 6.3 Outgoing messages
+### 6.3 Identity: `user_key` and `scope_key`
+
+Every job carries three names for the person talking. Fuli keys memories, sessions, per-turn buffers, and moods by the first two; the display name is only shown to the model.
+
+| Field | Built from | Example | Used for |
+|---|---|---|---|
+| `user_key` | `"<platform>:<platform_user_id>"` | `discord:1234…` | Stable identity. Survives display-name changes |
+| `scope_key` | `"<platform>:<scope_id>"` (Unity) / `discord:<guild>:<channel>` / `discord:dm:<channel>` | `unity:default` | Where the conversation happens. Bounds retrieval, sessions, the recent-turn list, and the mood |
+| `user_name` | client-supplied | `Justin` | Display name in prompts and saved memories. **Required**; requests without it are rejected |
+
+- How far a memory search reaches is set per character by `memory_config.scope` in `RAG_config.yaml`: `user_in_scope` (default: this user, this scope), `scope` (everyone in this scope, for group chats), or `user` (this user, any scope). **DM scopes are never visible from any other scope**, whatever the policy.
+- Edge clients that send only `user_name` still work: they fall back to `user_key = "legacy:<user_name>"`, so two people with the same name on different platforms would share memories until the client sends real ids.
+
+### 6.4 Messages and HTTP API
+
+**Edge messages**
 
 ```jsonc
-// → client
+// client → orchestrator (text input; voice input carries the same fields on audio_end)
+{ "type": "user_input", "payload": {
+    "text": "…", "user_name": "Justin",
+    "platform": "unity", "platform_user_id": "…", "scope_id": "living_room",  // optional, see 6.3
+    "image_base64": null } }
+
+// orchestrator → client
 { "type": "inference_result", "payload": {
     "request_id": "…", "status": "success", "output_text": "…", "error": null,
     "memory": { /* memory record saved by Fuli (without query and user_id) */ } } }
 
-// → tts (only on success)
+// orchestrator → tts (only on success)
 { "type": "tts_request", "payload": { "request_id": "…", "text": "…", "speaker": "reminh" } }
 ```
+
+**HTTP endpoints**
+
+| Method · Path | Purpose |
+|---|---|
+| `POST /discord/chat` | Discord bot entry point. Body: `user_id`, `user_name`, `guild_id`, `channel_id`, `is_dm`, `message_content`, `attachments`. Queues the turn on the same worker as Unity and returns `{request_id, status, output_text, error, emotion_tag}`. Times out after 180 s (the turn still runs and is still saved) |
+| `POST /character/emotion/reload` | Re-read `physics_weights.yaml` without a restart |
+| `POST /character/prompt/reload` | Re-read `prompt.yaml` and the shared VAD prompt without a restart |
+| `GET /health` | `{status, queue_size}` |
 
 ---
 
@@ -372,27 +412,29 @@ flowchart TB
     HS["HttpServer (Boost.Beast)"]
     subgraph Pipeline
         ORC["pipeline::Orchestrator"]
-        MR["MemoryRetriever<br/>Faiss + Redis join · sessions · per-user buffers"]
+        MR["MemoryRetriever<br/>Faiss + Redis join · scope policy · sessions<br/>per-conversation buffers · recent turns"]
+        MC["MemoryConfig<br/>config/memory.yaml (hot-reload)"]
     end
     subgraph Clients
         EMB["EmbeddingClient → TEI /embed"]
         RD["RedisDbClient (boost::redis)"]
-        OJ["OpenJevClient → /classify"]
-        LL["Llama5090Client → /v1/chat/completions"]
+        OJ["LayaClient → /v1/systemone"]
+        LL["Llama5090Client → SGLang /v1/chat/completions"]
     end
     GFE["GpuFaissEngine<br/>GpuIndexFlatL2 + dedicated worker thread"]
     EGO["deltaEGO"]
     HC["HealthChecker"]
 
-    HS -- "POST /character/context<br/>POST /character/context_memory" --> ORC
+    HS -- "POST /character/context<br/>POST /character/context_memory<br/>POST /character/context_cancel" --> ORC
     HS -- "GET /health" --> HC
     ORC --> EMB
     ORC --> MR
     ORC --> EGO
     MR --> GFE
     MR --> RD
-    EGO --> LL
-    EGO -.-> OJ
+    MR --> MC
+    EGO --> OJ
+    EGO -.-> LL
     HC --> EMB & RD & OJ & EGO
 ```
 
@@ -400,20 +442,21 @@ flowchart TB
 
 | Method · Path | Request | Response |
 |---|---|---|
-| `POST /character/context` | `FuliContextRequest` — `user_name`, `user_input`, `context`, `new_session`, `config.rag_policy`, `config.emotion_policy_raw` | `{ hits: [{id, score, user_input, model_response}], emotion_json }` |
-| `POST /character/context_memory` | `FuliContextSaveRequest` — `user_name`, `persona_name`, `persona_response` | Full saved `MemoryMetadata` (JSON) |
+| `POST /character/context` | `FuliContextRequest` — `user_key`, `scope_key`, `user_name`, `user_input`, `context`, `config.rag_policy`, `config.emotion_policy` | `{ hits: [{id, score, user_input, model_response}], recent_turns: [...], emotion_json }` |
+| `POST /character/context_memory` | `FuliContextSaveRequest` — `user_key`, `scope_key`, `user_name`, `persona_name`, `persona_response` | Full saved `MemoryMetadata` (JSON) |
+| `POST /character/context_cancel` | `FuliContextCancelRequest` — `user_key`, `scope_key`, `user_name` | `{ cancelled: bool }` — drops an open buffer without saving (idempotent) |
 | `GET /health` | – | `{ status: "ok" \| "degraded", services: {...} }` |
 
 Example requests/responses are in [`fuli/main_orch_files/`](fuli/main_orch_files/) for reference only (not used by the main code).
 
 ### 7.2 The `/character/context` pipeline
 
-1. **Acquire a memory buffer** — `user_name` is hashed with MurmurHash3 (128-bit) into a `UserId`, which keys a per-user buffer.
-2. **Resolve the session ID** — `MemoryRetriever` owns a per-user session UUID. `new_session=true` mints a fresh one.
-3. **Embed** — if `rag_policy.dense_vector` is absent, the input is embedded with TEI (bge-m3, 1024 dims).
-4. **First-pass retrieval** — Faiss is oversampled at `top_k × 5`, candidates are joined with Redis metadata and filtered by `session_id` and `importance_threshold`.
-5. **Emotion branch** — `deltaEGO::sephirothic_tree(user_input)` updates the emotional state (see [Section 8](#8-deltaego-emotion-engine)).
-6. **Assemble** — builds the response and records this turn's user input, emotion snapshot, and original request in the buffer.
+1. **Acquire a memory buffer** — keyed by the conversation `(user_key, scope_key)`; `user_key` is hashed with MurmurHash3 (128-bit). A buffer left unsaved for more than `kStaleBufferSeconds` (300 s) is taken over by the next request.
+2. **Resolve the session ID** — `MemoryRetriever` owns one session UUID per conversation; the first request for a conversation mints it.
+3. **Embed + recent turns** — the input is embedded with TEI (bge-m3, 1024 dims) unless `rag_policy.dense_vector` is given; in parallel, the conversation's latest turns are read from Redis (count set in `config/memory.yaml`).
+4. **First-pass retrieval** — Faiss is oversampled at `top_k × 5`, candidates are joined with Redis metadata and filtered by session, by the user/scope policy (6.3), and by `importance_threshold`.
+5. **Emotion branch** — `deltaEGO::sephirothic_tree(user_input, scope_key, emotion_policy)` updates **this scope's** mood, using the backend and OCEAN weights from the request's `emotion_policy` (see [Section 8](#8-deltaego-emotion-engine)).
+6. **Assemble** — memories already present in `recent_turns` are dropped from `hits`; the response is built and this turn's user input, emotion snapshot, and original request are recorded in the buffer.
 
 ### 7.3 Two-phase turn protocol (memory buffer)
 
@@ -425,20 +468,24 @@ stateDiagram-v2
     [*] --> Idle
     Idle --> Buffered: POST /character/context<br/>(create buffer, record user input + emotion)
     Buffered --> Idle: POST /character/context_memory<br/>(add response → embed → store in Faiss/Redis → delete buffer)
-    Buffered --> Error: /character/context again with the same user_name
+    Buffered --> Idle: POST /character/context_cancel<br/>(drop buffer, nothing saved)
+    Buffered --> Buffered: /character/context after 300 s<br/>(stale buffer taken over)
+    Buffered --> Error: /character/context again within 300 s<br/>(same user_key + scope_key)
     Idle --> Error: /character/context_memory with no buffer
     Error --> [*]: HTTP 500
 ```
 
 - On the Python side, `Orchestrator._process` always calls `save_turn()` exactly once after a successful VL inference.
-- The buffer is **always deleted**, even if the Store step fails, so the next turn is never blocked.
+- The buffer is **always deleted** after a save, even if the Store step fails, so the next turn is never blocked.
+- Because buffers are per conversation, the same user can have turns open in two different scopes (e.g. two Discord channels) at once.
 
 ### 7.4 Storage
 
 | Store | Contents | Notes |
 |---|---|---|
 | **Faiss** (`GpuIndexFlatL2`) | Embedding of `(user_input + model_response)`, ID = ID allocated by Redis | Saved to `data/memory_index.faiss` / `.ids`. Autosaved every 5 minutes and on SIGINT/SIGTERM |
-| **Redis** | `mem:{id}` hash — conversation content, user/persona, emotion snapshot, session, timestamp, original request | IDs come from the `next_mem_id` counter (`INCR`). Nested fields are flattened with dot notation, e.g. `memory.content.user_input` |
+| **Redis** | `mem:{id}` hash — conversation content, user/persona, `user_key`/`scope_key`, emotion snapshot, session, timestamp, original request | IDs come from the `next_mem_id` counter (`INCR`). Nested fields are flattened with dot notation, e.g. `memory.content.user_input` |
+| **Redis** | `recent:scope:{scope_key}` (or `recent:user:{user_key}` without a scope) list — the conversation's latest turns, newest first | Trimmed to `max_stored`, expires after `ttl_seconds` of inactivity (both in `config/memory.yaml`) |
 
 > If no saved index exists, Fuli **seeds 200 random test vectors** (`SeedTestVectors`) so the pipeline can be verified end to end. Remove this before real use.
 
@@ -450,14 +497,16 @@ Source: [`fuli/src/deltaEGO/`](fuli/src/deltaEGO/)
 
 deltaEGO represents the character's emotion as **a point in 3D VAD (Valence · Arousal · Dominance) space** and moves it physically in response to stimuli, in a way shaped by the character's personality (OCEAN).
 
+deltaEGO keeps **one mood per `scope_key`**: each Discord channel, DM, and Unity scene has its own VAD state and history, so an argument in one channel doesn't sour Reminh's mood in another. A mood untouched for `kMoodIdleSeconds` (24 h) is dropped, and the next message in that scope starts again from the resting state.
+
 ```mermaid
 flowchart LR
     T["user_input (text)"] --> CA
 
     subgraph CA["Carmen — text → VAD stimulus"]
         direction TB
-        G5["Gebura_5090<br/>ask the LLM how Reminh would feel<br/>(default)"]
-        OJV["OpenJEV NLI<br/>classify hypotheses over a -1..1 grid → weighted average<br/>(optional, use_jev)"]
+        OJV["Laya<br/>pick one of 7 labeled levels per axis → -1..1<br/>(use_laya, configured default)"]
+        G5["Gebura_5090<br/>ask the LLM how Reminh would feel<br/>(use_5090 / fallback)"]
     end
 
     CA -- "stimulus (v,a,d)" --> AY
@@ -474,8 +523,10 @@ flowchart LR
 
 ### 8.1 Carmen — extracting a stimulus from text
 
-- **Default path (5090)**: asks the llama.cpp server on the 5090 GPU machine, with a persona prompt (same idea as [`VAD_inference_prompt.yaml`](orchestrator/Persona/Config/Common/VAD_inference_prompt.yaml)), how *Reminh herself* would feel on hearing the message, returned as VAD JSON. The key point is that it estimates **the character's reaction**, not the speaker's emotion.
-- **OpenJEV path (optional)**: builds a hypothesis for each candidate value on a per-axis grid, scores them with an NLI classifier, and uses the entailment-weighted average as the VAD. Still experimental.
+Both backends estimate **the character's reaction**, not the speaker's emotion: the question is always how *Reminh herself* would feel on hearing the message. Which one runs is chosen per request by the `emotion_policy` flags the Orchestrator sends (`emotion_inference` in `config.yaml`).
+
+- **Laya path (configured default)**: sends the message to Laya Serve (`POST /v1/systemone`) in a single request with one question per axis, each offering seven labeled levels from "very negative" to "very positive", each anchored by examples ("neutral (ordinary question, greeting, small talk)"). Laya's expected level index is mapped onto -1..1. It answers in tens of milliseconds on a GPU. A bearer token is read from the `LAYA_API_KEY` environment variable if Laya requires one.
+- **5090 path (fallback)**: asks the SGLang server on the 5090 GPU machine, with a persona prompt (same idea as [`VAD_inference_prompt.yaml`](orchestrator/Persona/Config/Common/VAD_inference_prompt.yaml)), for VAD JSON. SGLang's schema-constrained output guarantees the reply parses. Used when `use_5090` is set, or when Laya fails and `fallback_to_5090` is on.
 
 
 ### 8.2 Roland — personality-driven emotion physics
@@ -516,16 +567,16 @@ Finds the emotion word closest to the updated VAD point in a VAD lexicon (entrie
 ### 8.4 Example personality config
 
 ```yaml
-# fuli/config/deltaEGO_default.yaml (== orchestrator/Persona/Config/Reminh/physics_weights.yaml)
+# orchestrator/Persona/Config/Reminh/physics_weights.yaml
 OCEAN:
-  Openness: 0.8
+  Openness: 0.6
   Conscientiousness: 0.7
   Extraversion: 0.4
-  Agreeableness: 0.9
-  Neuroticism: 0.2
+  Agreeableness: 0.6
+  Neuroticism: 0.3
 ```
 
-> deltaEGO currently reads **only `fuli/config/deltaEGO_default.yaml`, at server startup**. The `emotion_policy_raw` the Orchestrator sends with every request is parsed but not yet applied.
+> The Orchestrator sends these weights with every request (`emotion_policy`), and deltaEGO applies them to that turn, so editing `physics_weights.yaml` and calling `POST /character/emotion/reload` changes Reminh's temperament on the next message. `fuli/config/deltaEGO_default.yaml` is only the fallback for requests that carry no policy.
 
 ---
 
@@ -539,20 +590,20 @@ OCEAN:
 
 | Service | Purpose | Used by |
 |---|---|---|
-| Redis | Memory metadata | Fuli |
+| Redis | Memory metadata and recent-turn lists | Fuli |
 | [TEI](https://github.com/huggingface/text-embeddings-inference) + `bge-m3` | 1024-dim embeddings (`/embed`) | Fuli |
-| llama.cpp server (5090) | VAD estimation | Fuli (deltaEGO) |
-| llama.cpp-compatible VL server | Character response generation | Orchestrator |
+| Laya Serve | VAD estimation (configured default) | Fuli (deltaEGO) |
+| [SGLang](https://github.com/sgl-project/sglang) server (5090) | VAD estimation (fallback) | Fuli (deltaEGO) |
+| SGLang server with a vision-language model | Character response generation | Orchestrator |
 | STT server | Speech recognition (HTTP or WS) | delta-edge |
 | TTS server | Speech synthesis (connects to the edge as role `tts`) | delta-edge |
-| OpenJEV (optional) | NLI-based VAD estimation | Fuli |
 | NRC-VAD lexicon | Emotion term lookup (`VAD.json`, not included) | Fuli (deltaEGO) |
 
 ### 9.2 Recommended startup order
 
 ```mermaid
 flowchart LR
-    A["Redis / TEI / llama.cpp"] --> B["Fuli"]
+    A["Redis / TEI / Laya / SGLang"] --> B["Fuli"]
     B --> C["delta-edge"]
     C --> D["Orchestrator"]
     C --> E["TTS · (STT)"]
@@ -596,7 +647,13 @@ Requirements: Python 3.10+
 cd orchestrator
 pip install fastapi uvicorn websockets requests pydantic pyyaml python-dotenv
 python server.py
+
+# optional: terminal dashboard
+pip install -r requirements-tui.txt
+python server.py --tui        # add -v to start with the verbose view on
 ```
+
+Every request needs a `user_name` (see [6.3](#63-identity-user_key-and-scope_key)), so clients must send one before they get replies.
 
 ### 9.6 live_emodata (emotion data viewer)
 
@@ -651,9 +708,14 @@ python server.py            # http://127.0.0.1:<SERVER_PORT>
 | `edge.url` | Edge hub WS URL (the `EDGE_SERVER_URL` env var takes precedence) |
 | `edge.role` | Role to register as (`orchestrator`) |
 | `servers.*_server_ip` | `host:port` of each microservice. Leave blank to skip it in the liveness sweep |
-| `vl_model.*` | VL server address/port, model alias and filename, `temperature`, `max_token`, `top_p` |
-| `emotion_inference.backend` | `5090` \| `openjev` |
-| `emotion_inference.fallback_to_5090` | Retry on 5090 if openjev fails |
+| `vl_model.address`, `vl_model.port` | SGLang server address |
+| `vl_model.alias` | Must match SGLang's `--served-model-name` |
+| `vl_model.model_full` | Matched against the server's `model_path` to confirm the right model is loaded |
+| `vl_model.temperature`, `max_token`, `top_p` | Sampling settings (`max_token` covers thinking + answer) |
+| `vl_model.enable_thinking` | Thinking mode on/off; remove the key to use the server default. Off keeps voice replies fast |
+| `vl_model.timeout` | Seconds to wait for one completion |
+| `emotion_inference.backend` | `laya` \| `5090` |
+| `emotion_inference.fallback_to_5090` | Retry on 5090 if Laya fails |
 
 - To use a different config file: `ORCHESTRATOR_CONFIG=/path/to/config.yaml`
 - Secrets such as API keys belong in `.env`, not `config.yaml` (`.env` is gitignored).
@@ -667,11 +729,25 @@ At the MVP stage these are **compile-time constants**; changing them requires a 
 | `kListenPort` | Fuli HTTP port |
 | `kEmbeddingHost/Port` | TEI address |
 | `kRedisHost/Port` | Redis address |
-| `kLlama5090Host/Port` | llama.cpp address for VAD estimation |
-| `kOpenJevHost/Port` | OpenJEV address |
+| `kLlama5090Host/Port` | SGLang address for fallback VAD estimation |
+| `kLayaHost/Port` | Laya Serve address |
 | `kEmbeddingDim` | Embedding dimension (bge-m3 = 1024; must match the model) |
+| `kStaleBufferSeconds` | How long an unsaved turn buffer blocks its conversation before it can be taken over (300 s) |
+| `kMoodIdleSeconds` | How long an idle scope keeps its mood before resetting (24 h) |
 | `kFaissIndexPath` | Index save path (`data/memory_index`) |
 | `kAutosaveIntervalSeconds` | Autosave interval (300 s) |
+
+Environment variable: `LAYA_API_KEY` — bearer token for Laya, if Laya was started with one.
+
+### 10.4 Fuli memory settings (`fuli/config/memory.yaml`)
+
+Re-read whenever the file changes on disk; no restart or rebuild needed.
+
+| Key | Default | Description |
+|---|---|---|
+| `RecentTurns.count` | `10` | How many recent turns `/character/context` returns (0 disables the feature) |
+| `RecentTurns.max_stored` | `50` | How many turns Redis keeps per conversation; `count` is clamped to this |
+| `RecentTurns.ttl_seconds` | `604800` | A conversation idle this long has its recent list expired (7 days) |
 
 ---
 
@@ -680,24 +756,23 @@ At the MVP stage these are **compile-time constants**; changing them requires a 
 This repository is an MVP under active development. The following gaps are called out in code comments.
 
 **Fuli**
-- Of the RAG policy, only `top_k`, `session_id`, and `importance_threshold` are applied. Knowledge-base search, hybrid (sparse+dense) fusion, graph traversal, time decay, rerank, `min_score_threshold`, and chunk expansion are parsed but ignored.
-- `emotion_policy_raw` (per-request personality values) is not applied yet.
-- OpenJEV only runs a smoke test at startup; its VAD estimation path is opt-in and experimental.
-- Session IDs and memory buffers live **in process memory only** and are lost on restart.
+- Of the RAG policy, only `top_k`, `scope`, session, and `importance_threshold` are applied. Knowledge-base search, hybrid (sparse+dense) fusion, graph traversal, time decay, rerank, `min_score_threshold`, and chunk expansion are parsed but ignored.
+- Laya's VAD wording compresses strong positive messages (e.g. "I love you" scores about +0.33 valence where the 5090 path gives +0.80), and was tuned against only 22 messages.
+- Session IDs, turn buffers, and per-scope moods live **in process memory only** and are lost on restart. Memories and recent-turn lists are in Faiss/Redis and survive.
 - Random test vectors are seeded when no saved index exists.
 - The `io_context` is single-threaded. `proto/search_service.proto` (gRPC) is compiled into the build but not yet exposed as a service.
 
 **Orchestrator**
 - The active character is hardcoded to `Reminh`.
-- `POST /discord/chat` is not implemented (`NotImplementedError`).
-- `VisionLangHandler` currently handles text only (sending images is a TODO).
+- One image per turn (Discord uses only the first attachment).
+- Clients that send only `user_name` fall back to a `legacy:` identity (see 6.3).
 - The `speaker` in `tts_request` is hardcoded to `"reminh"`.
 
 **delta-edge**
 - There is no authentication. Any connection can register as any role, so only run it on a trusted internal network.
 
 **Planned**
-- Finish the OpenJEV port. The current version returns results quickly (~30 ms) but its VAD estimates are not yet stable enough to replace the 5090 path as the default.
+- Re-tune Laya's VAD wording on a larger message set so its estimates match the 5090 path more closely.
 - Stream LLM output to TTS sentence-by-sentence to reduce time to first audio.
 - Hybrid search (sparse + dense) with RRF fusion and a reranker in Fuli ("RAG 2.0").
 - Idle power saving: sleep model servers when unused and cold-start them on demand from the client.
@@ -731,4 +806,4 @@ The first prototype (docs, edge, orchestrator, and an earlier Python-wrapped del
 
 - **NRC-VAD Lexicon** — deltaEGO's emotion-term lookup uses the NRC Valence, Arousal, and Dominance Lexicon. Its license does not permit redistribution, so `VAD.json` is **not included** in this repository. To run deltaEGO, obtain the lexicon from its authors under their terms, convert it to the expected JSON format, and place it at `fuli/include/VAD_DB/VAD.json`. The live_emodata viewer can optionally use the same file (copy it into `live_emodata/`).
   <!-- TODO (Justin): link the conversion script if it is included, and describe what happens when the file is missing. -->
-- **bge-m3**, **Faiss**, **llama.cpp**, **TEI**, and other dependencies are used under their respective licenses.
+- **bge-m3**, **Faiss**, **SGLang**, **TEI**, and other dependencies are used under their respective licenses.
