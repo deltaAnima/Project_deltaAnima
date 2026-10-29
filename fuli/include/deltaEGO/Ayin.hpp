@@ -50,7 +50,11 @@ public:
     float similarity;
   };
 
-  ProcessResult Process(const structs::VAD_Point &input_stimulus);
+  // mood_key picks whose mood moves (see Roland); policy is the
+  // request's emotion_policy, applied for this call only.
+  ProcessResult Process(const std::string &mood_key,
+                        const structs::VAD_Point &input_stimulus,
+                        const nlohmann::json &policy);
 
 private:
   std::unique_ptr<Roland> roland_;

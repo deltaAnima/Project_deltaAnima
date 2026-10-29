@@ -5,10 +5,10 @@ namespace health
 {
   HealthChecker::HealthChecker(const clients::EmbeddingClient &embedding_client,
                                 const clients::RedisDbClient &redis_client,
-                                const clients::OpenJevClient &openjev_client,
+                                const clients::LayaClient &laya_client,
                                 const deltaEGO::deltaEGO &emotion_engine)
     : embedding_client_(embedding_client), redis_client_(redis_client),
-      openjev_client_(openjev_client), emotion_engine_(emotion_engine)
+      laya_client_(laya_client), emotion_engine_(emotion_engine)
     {}
 
   std::future<nlohmann::json> HealthChecker::CheckAll() const
@@ -27,8 +27,8 @@ namespace health
       auto redis_future = std::async(std::launch::async, [this]() {
         return redis_client_.HealthCheck();
       });
-      auto openjev_future = std::async(std::launch::async, [this]() {
-        return openjev_client_.HealthCheck();
+      auto laya_future = std::async(std::launch::async, [this]() {
+        return laya_client_.HealthCheck();
       });
       auto llama_5090_future = std::async(std::launch::async, [this]() {
         return emotion_engine_.Check5090Health();
@@ -41,7 +41,7 @@ namespace health
       nlohmann::json result;
       result["embedding"] = embedding_future.get();
       result["redis"] = redis_future.get();
-      result["openjev"] = openjev_future.get();
+      result["laya"] = laya_future.get();
       result["llama_5090"] = llama_5090_future.get();
 
       return result;

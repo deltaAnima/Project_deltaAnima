@@ -60,8 +60,9 @@ struct MemoryMetadata
       {
         uint64_t high{0};
         uint64_t low{0};
-      } user_id;
-      std::string user_name;     // name of the user
+      } user_id;                 // MakeUserId(user_key)
+      std::string user_key;      // stable platform identity, see FuliContextRequest
+      std::string user_name;     // display name of the user
       std::string user_content;  // same as user input
     } user;
 
@@ -87,6 +88,7 @@ struct MemoryMetadata
   struct Metadata
   {
     std::optional<std::string> session_id;
+    std::optional<std::string> scope_key; // where the turn happened, see FuliContextRequest
     float importance = 0.5f;  // matches importance_threshold's 0..1 scale
     int64_t timestamp = 0;    // unix epoch seconds, for time-decay scoring
     int64_t faiss_id = 0;     // the id that GpuFaissEngine uses to retrieve the vector
@@ -136,11 +138,13 @@ inline void from_json(const nlohmann::json &j, MemoryMetadata::Memory::User::Use
 
 inline void to_json(nlohmann::json &j, const MemoryMetadata::Memory::User &u) {
   j = nlohmann::json{{"user_id", u.user_id},
+                      {"user_key", u.user_key},
                       {"user_name", u.user_name},
                       {"user_content", u.user_content}};
 }
 inline void from_json(const nlohmann::json &j, MemoryMetadata::Memory::User &u) {
   u.user_id = j.value("user_id", MemoryMetadata::Memory::User::UserId{});
+  u.user_key = j.value("user_key", std::string());
   u.user_name = j.value("user_name", std::string());
   u.user_content = j.value("user_content", std::string());
 }
@@ -213,6 +217,7 @@ inline void from_json(const nlohmann::json &j, MemoryMetadata::EmotionAnalysis &
 inline void to_json(nlohmann::json &j, const MemoryMetadata::Metadata &md) {
   j = nlohmann::json{
       {"session_id", md.session_id ? nlohmann::json(*md.session_id) : nlohmann::json(nullptr)},
+      {"scope_key", md.scope_key ? nlohmann::json(*md.scope_key) : nlohmann::json(nullptr)},
       {"importance", md.importance},
       {"timestamp", md.timestamp},
       {"faiss_id", md.faiss_id}};
@@ -220,6 +225,8 @@ inline void to_json(nlohmann::json &j, const MemoryMetadata::Metadata &md) {
 inline void from_json(const nlohmann::json &j, MemoryMetadata::Metadata &md) {
   if (j.contains("session_id") && !j.at("session_id").is_null())
     md.session_id = j.at("session_id").get<std::string>();
+  if (j.contains("scope_key") && !j.at("scope_key").is_null())
+    md.scope_key = j.at("scope_key").get<std::string>();
   md.importance = j.value("importance", 0.5f);
   md.timestamp = j.value("timestamp", int64_t{0});
   md.faiss_id = j.value("faiss_id", int64_t{0});
@@ -277,6 +284,27 @@ public:
   // Redis, so Faiss's id_map_ and Redis's mem:{id} keys never collide
   // even across restarts (the counter lives in Redis, not in-process).
   boost::asio::awaitable<int64_t> NextId();
+
+  // HGET/HSET on the single "sessions" hash — one field per
+  // conversation (see MemoryRetriever::GetOrCreateSessionId), so session
+  // ids survive a server restart instead of living only in-process.
+  // GetSessionId returns std::nullopt if that conversation has none yet.
+  boost::asio::awaitable<std::optional<std::string>>
+  GetSessionId(const std::string &conversation_key);
+  boost::asio::awaitable<void> SetSessionId(const std::string &conversation_key,
+                                            const std::string &session_id);
+
+  // recent:{recent_key} LIST, newest at the head — the last few turns of
+  // a conversation in order, independent of whether they'd ever win a
+  // Faiss similarity search (see MemoryRetriever::GetRecentTurns).
+  // Push is LPUSH + LTRIM to max_stored + EXPIRE ttl in one round trip.
+  // Get returns up to `count` raw JSON entries, newest first.
+  boost::asio::awaitable<void> PushRecentTurn(const std::string &recent_key,
+                                              const std::string &turn_json,
+                                              int max_stored, int ttl_seconds);
+  boost::asio::awaitable<std::vector<std::string>>
+  GetRecentTurns(const std::string &recent_key, int count);
+  boost::asio::awaitable<void> ClearRecentTurns(const std::string &recent_key);
 
   // Blocking (same pattern as EmbeddingClient::HealthCheck, so
   // HealthChecker::CheckAll can std::async both the same way) — a real

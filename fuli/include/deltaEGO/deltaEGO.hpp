@@ -3,7 +3,7 @@
  *
  * Ayin and Carmen (defined in deltaEGO.cpp) hold all the actual engine
  * internals — Int16Tensor/AVX-512 search, emotionPhysics, VAD math for
- * Ayin; the future OpenJEV text->VAD pipeline for Carmen. They're only
+ * Ayin; the Laya/5090 text->VAD pipeline for Carmen. They're only
  * forward-declared here and held by pointer so that consumers of this
  * header do not need to see or link against json/yaml-cpp/AVX intrinsics
  * directly — deltaEGO owns them directly, there is no intermediate Impl
@@ -181,14 +181,14 @@ namespace deltaEGO {
     // config_path: path to the YAML file with OCEAN/physics weights.
     // def_V/def_A/def_D/def_radius: default (resting) VAD state.
     // ioc: THE server's single io_context (see main.cpp) — forwarded to
-    // Carmen, which needs it for its network clients (OpenJEV, the 5090
-    // fallback). Not owned; must outlive this deltaEGO instance.
-    // host_jev/port_jev/host_5090/port_5090: where those two backends
-    // live — see config::kLlama5090Host/Port for the 5090 side.
+    // Carmen, which needs it for its network clients (Laya, the 5090
+    // SGLang model). Not owned; must outlive this deltaEGO instance.
+    // host_laya/port_laya/laya_api_key/host_5090/port_5090: where those
+    // two backends live — see config::kLaya*/kLlama5090* in constants.hpp.
     deltaEGO(boost::asio::io_context &ioc,
               const std::string &config_path,
               float def_V, float def_A, float def_D, float def_radius,
-              std::string host_jev, std::string port_jev,
+              std::string host_laya, std::string port_laya, std::string laya_api_key,
               std::string host_5090, std::string port_5090);
     ~deltaEGO();
 
@@ -201,25 +201,34 @@ namespace deltaEGO {
     // but starting from raw text instead of an already-known (v,a,d) —
     // calls Carmen::whisper_from_Carmen first to derive the stimulus,
     // then feeds that into the same physics/search path process_stimulus
-    // uses. Defaults (see whisper_from_Carmen) mean the 5090 machine is
-    // the basis unless you explicitly opt into OpenJEV with use_jev=true.
+    // uses.
+    //
+    // mood_key: whose mood this moves — one independent mood per key
+    // (Orchestrator passes scope_key, so each channel has its own).
+    // emotion_policy: the request's config.emotion_policy. Its OCEAN/
+    // weight sections override the YAML for this call only; its backend
+    // flags (use_laya, use_5090, fallback_to_5090, fallback_to_laya —
+    // use_openjev/fallback_to_openjev still accepted as aliases) pick the
+    // VAD estimator. Absent flags mean the 5090/SGLang path
+    // alone, same as before emotion_policy was honored.
     // Returns an awaitable, not a plain std::string, because
     // whisper_from_Carmen is itself a coroutine (it calls out over the
     // network) — co_await only works inside another coroutine, so this
     // one has to be one too. Callers must co_await this, the same way
     // Orchestrator co_awaits EmbeddingClient::Embed.
     boost::asio::awaitable<nlohmann::json>
-    sephirothic_tree(std::string context, bool use_jev = false,
-                      bool fallback_to_5090 = false, bool use_5090 = true,
-                      bool fallback_to_jev = false);
+    sephirothic_tree(std::string context, std::string mood_key,
+                      nlohmann::json emotion_policy = nlohmann::json::object());
 
     // Loads the VAD term database (see VAD_DB/VAD.json) used for nearest
     // neighbor emotion-term lookup. Returns false on parse/IO failure.
     bool load_vad_db(const std::string &json_path);
 
-    // Feeds one VAD stimulus into the physics engine and returns the
-    // resulting state + analysis as a JSON string.
-    nlohmann::json process_stimulus(float v, float a, float d);
+    // Feeds one VAD stimulus into mood_key's mood and returns the
+    // resulting state + analysis as JSON. emotion_policy as above.
+    nlohmann::json process_stimulus(float v, float a, float d,
+                                    const std::string &mood_key,
+                                    const nlohmann::json &emotion_policy);
 
     // Re-reads the YAML config passed to the constructor.
     bool reload_config();
@@ -232,7 +241,7 @@ namespace deltaEGO {
 
   private:
     std::unique_ptr<Ayin::Ayin> ayin_;
-    std::unique_ptr<Carmen::Carmen> carmen_; // unused until OpenJEV integration lands
+    std::unique_ptr<Carmen::Carmen> carmen_; // text -> VAD for sephirothic_tree
   };
 
 } // namespace deltaEGO

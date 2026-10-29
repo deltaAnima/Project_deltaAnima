@@ -62,15 +62,34 @@ NLOHMANN_JSON_SERIALIZE_ENUM(
                      {Granularity::WINDOW_EXPANDED, "window_expanded"},
                  })
 
+// Which memories a search may see, relative to the requesting turn's
+// user_key/scope_key:
+//   user_in_scope - this user's memories from this scope only (default)
+//   scope         - every user's memories from this scope (group chat)
+//   user          - this user's memories from every scope
+// Private scopes (DMs) are never visible from any other scope,
+// whatever the policy — see MemoryRetriever::Retrieve.
+enum class MemoryScope { USER_IN_SCOPE, SCOPE, USER };
+NLOHMANN_JSON_SERIALIZE_ENUM(MemoryScope,
+                              {
+                                  {MemoryScope::USER_IN_SCOPE, "user_in_scope"},
+                                  {MemoryScope::SCOPE, "scope"},
+                                  {MemoryScope::USER, "user"},
+                              })
+
 // --- MemoryQueryConfig ---------------------------------------------------
 // Options that only make sense when searching conversational memory
-// (as opposed to the knowledge base). NONE of the filtering described
-// here (time decay, importance threshold, session/user scoping) is
-// actually applied yet — the MVP pipeline parses these fields and then
-// ignores them. That's the next piece of work after this skeleton.
+// (as opposed to the knowledge base). session_id/user_id/scope_key/
+// scope and importance_threshold are applied by MemoryRetriever; time
+// decay is still parsed-but-ignored.
 struct MemoryQueryConfig {
+  // session_id, user_id (the user_key) and scope_key are always
+  // overwritten by Orchestrator with server-owned values — whatever the
+  // caller sends here is ignored. Only `scope` is the caller's choice.
   std::optional<std::string> session_id;
   std::optional<std::string> user_id;
+  std::optional<std::string> scope_key;
+  MemoryScope scope = MemoryScope::USER_IN_SCOPE;
   bool enable_time_decay = true;   // weight older memories lower
   float recency_weight = 0.3f;     // how strongly recency affects score
   float importance_threshold = 0.5f; // drop memories scored below this
@@ -91,6 +110,9 @@ inline void from_json(const json &j, MemoryQueryConfig &c) {
     c.session_id = j.at("session_id").get<std::string>();
   if (j.contains("user_id") && !j.at("user_id").is_null())
     c.user_id = j.at("user_id").get<std::string>();
+  if (j.contains("scope_key") && !j.at("scope_key").is_null())
+    c.scope_key = j.at("scope_key").get<std::string>();
+  c.scope = j.value("scope", MemoryScope::USER_IN_SCOPE);
   c.enable_time_decay = j.value("enable_time_decay", true);
   c.recency_weight = j.value("recency_weight", 0.3f);
   c.importance_threshold = j.value("importance_threshold", 0.5f);
@@ -110,6 +132,8 @@ inline void to_json(json &j, const MemoryQueryConfig &c) {
   j = json{
       {"session_id", c.session_id ? json(*c.session_id) : json(nullptr)},
       {"user_id", c.user_id ? json(*c.user_id) : json(nullptr)},
+      {"scope_key", c.scope_key ? json(*c.scope_key) : json(nullptr)},
+      {"scope", c.scope},
       {"enable_time_decay", c.enable_time_decay},
       {"recency_weight", c.recency_weight},
       {"importance_threshold", c.importance_threshold},

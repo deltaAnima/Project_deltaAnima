@@ -19,8 +19,9 @@ struct VadEstimate {
   float d = 0.0f;
 };
 
-// Async HTTP client for the llama.cpp server on the 5090 machine
-// (OpenAI-compatible /v1/chat/completions). This is the FALLBACK VAD
+// Async HTTP client for the SGLang server on the 5090 machine
+// (OpenAI-compatible /v1/chat/completions). Class name predates the
+// move from llama.cpp to SGLang. This is the FALLBACK VAD
 // estimator — emotion_policy.use_5090 / fallback_to_5090 (see
 // main_orch_files/http_request_format.json) — for when the primary
 // OpenJEV path (a teammate's separate branch, not this client) is
@@ -33,8 +34,8 @@ struct VadEstimate {
 // Unlike OpenJEV's NLI-based design (score many premise/hypothesis
 // pairs, weighted-average the entailment probabilities into a VAD
 // point), this asks the LLM directly for one (v, a, d) estimate per
-// call, using llama.cpp's schema-constrained JSON output
-// (response_format.schema) so the reply is guaranteed valid JSON
+// call, using SGLang's schema-constrained JSON output
+// (response_format.json_schema) so the reply is guaranteed valid JSON
 // instead of needing to parse free-form text out of a chat response.
 class Llama5090Client {
 public:
@@ -50,8 +51,8 @@ public:
   // this class only estimates, it doesn't decide what happens on failure.
   boost::asio::awaitable<VadEstimate> EstimateVad(std::string text) const;
 
-  // GET /health — llama.cpp's server returns 200 {"status":"ok"} when
-  // ready, 503 while the model is still loading. Blocking, same pattern
+  // GET /health — SGLang returns 200 once ready, non-200 while starting
+  // or unhealthy. Blocking, same pattern
   // as EmbeddingClient::HealthCheck, so HealthChecker::CheckAll can
   // std::async both the same way.
   nlohmann::json HealthCheck() const;

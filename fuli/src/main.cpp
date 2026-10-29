@@ -4,12 +4,12 @@
 //     -> GpuFaissEngine (loads a saved index if one exists, else seeds
 //        fake data — see LoadFromDisk/SeedTestVectors below)
 //     -> EmbeddingClient (talks to TEI bge-m3)
-//     -> OpenJevClient (talks to OpenJev NLI classify — smoke-tested only,
-//        not yet wired into Orchestrator)
+//     -> LayaClient (talks to Laya Serve — Carmen's typed-decision VAD
+//        estimator; this standalone one backs /health and a smoke test)
 //     -> Orchestrator (the actual /character/context pipeline logic)
 //     -> HttpServer (generic HTTP plumbing, routes into Orchestrator)
 // then hands control to io_context.run(), which drives every coroutine
-// (HTTP sessions, embedding calls, the Faiss search bridge, the OpenJev
+// (HTTP sessions, embedding calls, the Faiss search bridge, the Laya
 // smoke test, ...) from here on.
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/detached.hpp>
@@ -20,15 +20,17 @@
 #include <boost/asio/use_awaitable.hpp>
 #include <cmath>
 #include <csignal>
+#include <cstdlib>
 #include <filesystem>
 #include <iostream>
 #include <random>
 
 #include "Third_Party/json.hpp"
 #include "clients/embedding_client.hpp"
-#include "clients/openjev_client.hpp"
+#include "clients/laya_client.hpp"
 #include "clients/redis_db_client.hpp"
 #include "config/constants.hpp"
+#include "config/memory_config.hpp"
 #include "deltaEGO/deltaEGO.hpp"
 #include "engine/gpu_faiss_engine.hpp"
 #include "health/health_checker.hpp"
@@ -119,31 +121,25 @@ boost::asio::awaitable<void> AutosaveLoop(GpuFaissEngine &engine)
   }
 }
 
-// One-shot smoke test for OpenJevClient, spawned (not awaited) from
-// main() before ioc.run(). Fires a single known premise/hypothesis pair
-// at OpenJev and logs the resulting scores, purely to prove the
-// HTTP -> OpenJev -> response chain works end to end before anything in
-// Orchestrator depends on it. DELETE this call once OpenJev is actually
-// wired into the request pipeline (or keep it behind a flag) — it's a
-// one-off diagnostic, not a health check.
-boost::asio::awaitable<void> TestOpenJev(clients::OpenJevClient &openjev)
+// One-shot smoke test for LayaClient, spawned (not awaited) from main()
+// before ioc.run(). Sends one known sentence through EstimateVad and logs
+// the result, so a startup log shows at a glance whether Laya is reachable
+// and whether its VAD numbers look sane. A one-off diagnostic, not a
+// health check.
+boost::asio::awaitable<void> TestLaya(clients::LayaClient &laya)
 {
   try
   {
-    static constexpr char kPremise[] = "The cat is sleeping on the couch.";
-    static constexpr char kHypothesis[] = "The cat is awake.";
+    static constexpr char kText[] = "I just got the job offer, I can't stop smiling!";
 
-    clients::OpenJevScores scores =
-        co_await openjev.Classify(kPremise, kHypothesis);
+    clients::VadEstimate vad = co_await laya.EstimateVad(kText);
 
-    std::cout << "[OpenJev] test classify ok — "
-              << "contradiction=" << scores.contradiction << " "
-              << "entailment=" << scores.entailment << " "
-              << "neutral=" << scores.neutral << std::endl;
+    std::cout << "[Laya] test estimate ok — v=" << vad.v << " a=" << vad.a
+              << " d=" << vad.d << std::endl;
   }
   catch (const std::exception &e)
   {
-    std::cerr << "[OpenJev] test classify failed: " << e.what() << std::endl;
+    std::cerr << "[Laya] test estimate failed: " << e.what() << std::endl;
   }
 }
 
@@ -162,16 +158,22 @@ int main()
   // you need real parallelism across requests, not just concurrency.
   net::io_context ioc{1};
 
-  // deltaEGO owns its own OCEAN/physics config (loaded once, here, at
-  // startup) — it does NOT yet read the per-request emotion_policy the
-  // client sends (see schemas/fuli_schemas.hpp's emotion_policy_raw
-  // comment). def_V/def_A/def_D/def_radius (all zeros/1.0 here) are the
-  // character's resting emotional state before any stimulus is applied.
+  // Laya's bearer token (LAYA_API_KEY on the Laya side) — from the
+  // environment so it never lands in the repo. Unset means Laya runs
+  // without auth.
+  const char *laya_api_key_env = std::getenv("LAYA_API_KEY");
+  std::string laya_api_key = laya_api_key_env ? laya_api_key_env : "";
+
+  // deltaEGO's YAML config (loaded once, here, at startup) is the
+  // default; each request's emotion_policy overrides it for that turn
+  // (see deltaEGO::sephirothic_tree). def_V/def_A/def_D/def_radius (all
+  // zeros/1.0 here) are the resting state every per-scope mood starts at.
   std::cout << "[Init] loading deltaEGO config: " << config::kDeltaEgoConfigPath
             << std::endl;
   deltaEGO::deltaEGO emotion_engine(ioc, config::kDeltaEgoConfigPath, 0.0f, 0.0f,
-                                     0.0f, 1.0f, config::kOpenJevHost,
-                                     config::kOpenJevPort, config::kLlama5090Host,
+                                     0.0f, 1.0f, config::kLayaHost,
+                                     config::kLayaPort, laya_api_key,
+                                     config::kLlama5090Host,
                                      config::kLlama5090Port);
   if (!emotion_engine.load_vad_db(config::kVadDbPath)) 
   {
@@ -207,10 +209,10 @@ int main()
                                      config::kEmbeddingPort);
 
   // Same story as EmbeddingClient above: no connection opens yet, just
-  // remembers where OpenJev lives. Not referenced by Orchestrator yet —
-  // see TestOpenJev() for the one-off smoke test proving it's reachable.
-  clients::OpenJevClient openjev(ioc, config::kOpenJevHost,
-                                  config::kOpenJevPort);
+  // remembers where Laya lives. Carmen (inside emotion_engine) owns the
+  // one requests actually use; this one backs /health and TestLaya().
+  clients::LayaClient laya(ioc, config::kLayaHost, config::kLayaPort,
+                           laya_api_key);
 
   // RedisDbClient's background connection (see Run()) needs to be
   // started before anything calls Get/SetMemoryMetadata on it.
@@ -218,10 +220,14 @@ int main()
                                        config::kRedisPort);
   redis_client.Run();
 
+  // Hot-reloaded on each request (see config::MemoryConfig), so the
+  // recent-turn window can be resized without a restart.
+  config::MemoryConfig memory_config(config::kMemoryConfigPath);
+
   // MemoryRetriever is the Faiss+Redis join layer — it's what
   // Orchestrator actually talks to for retrieval now, not
   // search_engine/redis_client directly.
-  pipeline::MemoryRetriever memory_retriever(search_engine, redis_client);
+  pipeline::MemoryRetriever memory_retriever(search_engine, redis_client, memory_config);
 
   // Orchestrator holds references to all of the above — none of them
   // may be destroyed before Orchestrator (and, transitively, before
@@ -233,7 +239,7 @@ int main()
 
   // Same reference-holding, same lifetime rule as Orchestrator above:
   // health_checker just borrows these, doesn't own them.
-  health::HealthChecker health_checker(embedder, redis_client, openjev,
+  health::HealthChecker health_checker(embedder, redis_client, laya,
                                         emotion_engine);
 
   httpsrv::HttpServer server(ioc, config::kListenPort);
@@ -267,6 +273,19 @@ int main()
       nlohmann::json saved_memory =
           co_await orchestrator.HandleContextSaveRequest(std::move(req));
       co_return saved_memory.dump();
+    }
+  );
+
+  server.RegisterRoute(
+    "POST /character/context_cancel",
+    [&orchestrator](std::string body) -> net::awaitable<std::string>
+    {
+      schemas::FuliContextCancelRequest req =
+          json::parse(body).get<schemas::FuliContextCancelRequest>();
+
+      nlohmann::json result =
+          co_await orchestrator.HandleContextCancelRequest(std::move(req));
+      co_return result.dump();
     }
   );
 
@@ -340,11 +359,11 @@ int main()
   // ioc.run() below.
   server.Run();
 
-  // Fire the OpenJev smoke test too — co_spawn schedules it, it doesn't
+  // Fire the Laya smoke test too — co_spawn schedules it, it doesn't
   // run until ioc.run() starts driving the event loop below. detached
   // means main() doesn't wait on it or see its result directly; success
-  // or failure is reported via the [OpenJev] log lines in TestOpenJev().
-  net::co_spawn(ioc, TestOpenJev(openjev), net::detached);
+  // or failure is reported via the [Laya] log lines in TestLaya().
+  net::co_spawn(ioc, TestLaya(laya), net::detached);
 
   std::cout << "[Fuli] orchestrator_server up — POST /character/context on :"
             << config::kListenPort << std::endl;

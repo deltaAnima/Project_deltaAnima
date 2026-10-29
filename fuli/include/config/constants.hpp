@@ -26,20 +26,37 @@ inline constexpr const char *kEmbeddingPort = "8080";
 inline constexpr const char *kRedisHost = "127.0.0.1";
 inline constexpr const char *kRedisPort = "8080";
 
-// The 5090 machine's llama.cpp server — Llama5090Client's fallback VAD
+// The 5090 machine's SGLang server — Llama5090Client's fallback VAD
 // estimator (see emotion_policy.use_5090/fallback_to_5090). Different
 // physical host from everything else here, unlike kRedisHost.
 inline constexpr const char *kLlama5090Host = "127.0.0.1";
 inline constexpr const char *kLlama5090Port = "8080";
 
-// Where the OpenJev NLI classifier lives — Carmen's primary VAD
-// estimator, with the 5090 machine (kLlama5090Host) as its fallback.
-inline constexpr const char *kOpenJevHost = "127.0.0.1";
-inline constexpr const char *kOpenJevPort = "8080";
+// Where Laya Serve lives — Carmen's typed-decision VAD estimator (see
+// laya_client.hpp), with the 5090 machine (kLlama5090Host) as the other
+// option. Laya's bearer token, if it was started with LAYA_API_KEY, is
+// read from this server's own LAYA_API_KEY environment variable at
+// startup rather than living here.
+inline constexpr const char *kLayaHost = "127.0.0.1";
+inline constexpr const char *kLayaPort = "8080";
 
 // The port THIS server (orchestrator_server) listens on for the
 // /character/context endpoint that FuliHandler (the Python side) calls.
 inline constexpr unsigned short kListenPort = 8080;
+
+// How long a per-turn memory buffer (created by /character/context,
+// consumed by /character/context_memory) may sit unsaved before the
+// next context request for the same (user_key, scope_key) is allowed to
+// take it over. Safety net for callers that died between the two calls
+// without reaching /character/context_cancel — must stay comfortably
+// above the slowest inference a caller will still save afterwards.
+inline constexpr int kStaleBufferSeconds = 300;
+
+// deltaEGO keeps one mood (VAD state + history) per scope_key. A mood
+// untouched for this long is dropped and the next message in that scope
+// starts again from the resting state — keeps channels that went quiet
+// from accumulating forever.
+inline constexpr int kMoodIdleSeconds = 24 * 60 * 60;
 
 // These are relative filesystem paths, resolved against whatever
 // directory you launch the binary from — NOT relative to this header or
@@ -48,6 +65,9 @@ inline constexpr unsigned short kListenPort = 8080;
 inline constexpr const char *kDeltaEgoConfigPath =
     "config/deltaEGO_default.yaml";
 inline constexpr const char *kVadDbPath = "include/VAD_DB/VAD.json";
+// Hot-reloaded on change (see config::MemoryConfig) — recent-turn
+// window size and retention live here, not as constants.
+inline constexpr const char *kMemoryConfigPath = "config/memory.yaml";
 
 // Where GpuFaissEngine's index gets saved/loaded (see
 // GpuFaissEngine::SaveToDisk — this becomes "{kFaissIndexPath}.faiss" and
