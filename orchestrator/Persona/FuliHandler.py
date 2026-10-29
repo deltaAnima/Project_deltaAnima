@@ -57,7 +57,7 @@ class FuliHandler:
 
     def _default_emotion_policy_raw(self) -> Dict[str, Any]:
         """
-        OCEAN/physics weights + backend flags (use_openjev/use_5090/fallback_to_5090).
+        OCEAN/physics weights + backend flags (use_laya/use_5090/fallback_to_5090).
         Fuli feeds this to deltaEGO on every request, so it is rebuilt per
         call — an Enigmata.reload() takes effect on the very next turn.
         """
@@ -96,8 +96,10 @@ class FuliHandler:
         outdated Fuli response raises instead of silently corrupting the
         prompt downstream.
 
-        Returns {"memories": str, "emotion": [emotion_term], "emotion_state":
-        EmotionResult} — `emotion` is the short mood-tag list prompts want;
+        Returns {"memories": str, "recent_turns": [RecentTurn], "emotion":
+        [emotion_term], "emotion_state": EmotionResult} — `recent_turns` is
+        the latest saved turns, oldest first (the short-term history the VL
+        call replays); `emotion` is the short mood-tag list prompts want;
         `emotion_state` is deltaEGO's full VAD+resistance read-out, kept
         around for whatever wants the numbers later.
         """
@@ -120,6 +122,7 @@ class FuliHandler:
 
         return {
             "memories": self.rag_handler.flatten_hits(result.hits, user_name),
+            "recent_turns": result.recent_turns,
             "emotion": [result.emotion.emotion_term],
             "emotion_state": result.emotion,
         }
@@ -129,8 +132,8 @@ class FuliHandler:
         """DEBUG trace of one /character/context answer: what Fuli remembered and how it reads the mood."""
         emotion = result.emotion
         logger.debug(
-            "Fuli context for %s (scope %s) in %.0f ms: %d memory hit(s), emotion=%s (%s)  similarity=%s",
-            user_key, scope_key, seconds * 1000, len(result.hits),
+            "Fuli context for %s (scope %s) in %.0f ms: %d memory hit(s), %d recent turn(s), emotion=%s (%s)  similarity=%s",
+            user_key, scope_key, seconds * 1000, len(result.hits), len(result.recent_turns),
             emotion.emotion_term, emotion.current_state, emotion.similarity,
         )
         for hit in result.hits:

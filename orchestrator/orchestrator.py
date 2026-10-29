@@ -186,10 +186,10 @@ class Orchestrator:
                 f"{len(job.image_base64)} base64 chars" if job.image_base64 else "no",
             )
             logger.debug("[%s] user input:\n%s", rid, _clip(job.text))
-        # get_character_prompt() round-trips to Fuli (memories + emotion),
+        # get_character_prompt() round-trips to Fuli (memories + emotion + recent turns),
         # then VisionLangHandler.inference() is a blocking `requests.post`
         # call — both are blocking, so both run off the event loop.
-        system_prompt = await asyncio.to_thread(
+        system_prompt, history = await asyncio.to_thread(
             self.character.get_character_prompt,
             user_key=job.user_key,
             scope_key=job.scope_key,
@@ -199,8 +199,8 @@ class Orchestrator:
         )
         if debug:
             logger.debug(
-                "[%s] system prompt, %d chars, ready after %.2fs:\n%s",
-                rid, len(system_prompt), time.monotonic() - started, _clip(system_prompt),
+                "[%s] system prompt, %d chars, %d history message(s), ready after %.2fs:\n%s",
+                rid, len(system_prompt), len(history), time.monotonic() - started, _clip(system_prompt),
             )
 
         success, text, llm_meta = await asyncio.to_thread(
@@ -209,6 +209,7 @@ class Orchestrator:
             system_prompt=system_prompt,
             image_base64=job.image_base64,
             request_id=job.request_id,
+            history=history,
         )
         if debug:
             _debug_vl_result(rid, success, text, llm_meta)

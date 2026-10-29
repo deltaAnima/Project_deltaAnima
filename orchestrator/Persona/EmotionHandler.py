@@ -42,11 +42,11 @@ class Enigmata:
         Boolean flags telling Fuli's C++ server which backend to run
         emotion (VAD) inference on. Fuli does the actual inference itself
         — from config.emotion_inference, we only say which one to use and
-        whether it should fall back to 5090 if openjev fails.
+        whether it should fall back to 5090 if laya fails.
         """
         backend = config.emotion_inference.backend
         return {
-            "use_openjev": backend == "openjev",
+            "use_laya": backend == "laya",
             "use_5090": backend == "5090",
             "fallback_to_5090": config.emotion_inference.fallback_to_5090,
         }

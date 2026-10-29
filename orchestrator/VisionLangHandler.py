@@ -99,7 +99,8 @@ class VisionLangHandler:
             system_prompt   : str,
             image_path      : str | None = None,
             image_base64    : str | None = None,
-            request_id      : str | None = None
+            request_id      : str | None = None,
+            history         : list[dict[str, Any]] | None = None
             ) -> list[Any]:
         """
         Gets text or/and image and send to VL to get response
@@ -111,6 +112,7 @@ class VisionLangHandler:
         3. image_path       : <str> *optional   | default = None | abs path of the image. It will be used when user shows Reminh image in the computer
         4. image_base64     : <str> *optional   | default = None | encoded image by base64. It is for Reminh's vision
         5. request_id       : <str> *optional   | default = None | sent as SGLang `rid`, so the server-side id matches ours
+        6. history          : <list> *optional  | default = None | earlier user/assistant messages, oldest first, replayed before user_prompt
 
         Return: list[bool(success or not), str(Reminh's response or error reason), dict(meta)]
             meta = {
@@ -156,8 +158,10 @@ class VisionLangHandler:
             })
 
         # build request
+        # earlier turns sit between the system prompt and the current input
         messages = [
             {"role": "system", "content": system_prompt},
+            *(history or []),
             {"role": "user", "content": content_list}
         ]
         body: dict[str, Any] = {

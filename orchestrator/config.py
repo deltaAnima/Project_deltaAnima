@@ -58,7 +58,7 @@ class ServerIps:
 
 @dataclass
 class EmotionInferenceConfig:
-    backend: str  # "openjev" | "5090"
+    backend: str  # "laya" | "5090"
     fallback_to_5090: bool
 
 
