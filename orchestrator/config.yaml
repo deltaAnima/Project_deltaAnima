@@ -47,7 +47,7 @@ vl_model:
 
 emotion_inference:
   # Fuli's C++ server does emotion (VAD) inference itself — this just tells
-  # it, as boolean flags, which backend to use: "openjev" | "5090"
-  backend: "5090"
-  # if backend is "openjev" and that call fails, Fuli should retry on 5090
+  # it, as boolean flags, which backend to use: "laya" | "5090"
+  backend: "laya"
+  # if backend is "laya" and that call fails, Fuli should retry on 5090
   fallback_to_5090: true

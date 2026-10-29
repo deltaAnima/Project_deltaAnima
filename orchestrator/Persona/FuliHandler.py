@@ -57,7 +57,7 @@ class FuliHandler:
 
     def _default_emotion_policy_raw(self) -> Dict[str, Any]:
         """
-        OCEAN/physics weights + backend flags (use_openjev/use_5090/fallback_to_5090).
+        OCEAN/physics weights + backend flags (use_laya/use_5090/fallback_to_5090).
         Fuli feeds this to deltaEGO on every request, so it is rebuilt per
         call — an Enigmata.reload() takes effect on the very next turn.
         """
