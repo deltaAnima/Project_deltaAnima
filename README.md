@@ -1,16 +1,17 @@
+
+
+
 # deltaAnima
 
 **deltaAnima** is a real-time, self-hosted backend for **Reminh**, an AI character that remembers past conversations and has a continuously evolving emotional state.
 
 You talk to Reminh by voice (or text) through a Unity client. She recalls relevant past conversations, reacts emotionally in a way shaped by her personality, answers in character, and speaks the answer back — all running on our own GPU servers, with no cloud APIs.
 
-<!-- TODO: add a demo GIF or video link here -->
+https://github.com/user-attachments/assets/58ccae23-5b89-4013-8cbe-ad9e223b61b3
 
 ---
 
 ## Why we built this
-
-<!-- TODO (Justin): rewrite in your own words. Draft below. -->
 
 Most AI chat characters are stateless: every conversation starts from zero, and their "personality" is just a paragraph in a prompt. We wanted to find out what it actually takes to build a character that **remembers you** and whose **mood carries over** from one message to the next — and to run the entire voice-to-voice loop in real time on hardware we own and operate ourselves.
 
@@ -731,5 +732,3 @@ The first prototype (docs, edge, orchestrator, and an earlier Python-wrapped del
 - **NRC-VAD Lexicon** — deltaEGO's emotion-term lookup uses the NRC Valence, Arousal, and Dominance Lexicon. Its license does not permit redistribution, so `VAD.json` is **not included** in this repository. To run deltaEGO, obtain the lexicon from its authors under their terms, convert it to the expected JSON format, and place it at `fuli/include/VAD_DB/VAD.json`. The live_emodata viewer can optionally use the same file (copy it into `live_emodata/`).
   <!-- TODO (Justin): link the conversion script if it is included, and describe what happens when the file is missing. -->
 - **bge-m3**, **Faiss**, **llama.cpp**, **TEI**, and other dependencies are used under their respective licenses.
-
-<!-- TODO: add a LICENSE file for this repository's own code. -->
