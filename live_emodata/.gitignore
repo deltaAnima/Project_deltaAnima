@@ -1,6 +1,5 @@
 .env
 *_view.html
-/original_py/
 __pycache__/
 *.pyc
 *.json
