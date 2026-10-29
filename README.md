@@ -37,6 +37,12 @@ The three services in this repository implement the "glue" and the "brain" of th
 | [`orchestrator/`](orchestrator/) | **Reminh Orchestrator** | Python (FastAPI, asyncio) | Inference job queue, persona prompt assembly, VL model calls, result delivery |
 | [`fuli/`](fuli/) | **Fuli** | C++20 (Boost.Asio coroutines, Faiss GPU, Redis) | Embedding → vector search → memory storage, plus the **deltaEGO** emotion engine |
 
+Alongside them sits one developer tool:
+
+| Directory | Tool | Language / Runtime | Role |
+|---|---|---|---|
+| [`live_emodata/`](live_emodata/) | **live_emodata** | Python (stdlib HTTP server, redis-py) | Read-only viewer that reads the memories Fuli stores in Redis and plots Reminh's emotion (VAD) over time in the browser |
+
 The speech (STT/TTS) servers, model servers, and Unity client live outside this repository.
 
 > **Naming note:** "Orchestrator" refers to the Python service. Fuli also has an internal `pipeline::Orchestrator` class that coordinates its own request pipeline; the two are unrelated.
@@ -591,6 +597,31 @@ pip install fastapi uvicorn websockets requests pydantic pyyaml python-dotenv
 python server.py
 ```
 
+### 9.6 live_emodata (emotion data viewer)
+
+An optional tool for inspecting how Reminh's emotional state evolves. It is not part of the request path: it only **reads** the `mem:*` hashes Fuli writes to Redis (see [7.4 Storage](#7-fuli-c-memory--emotion-server)) and serves them as a live web page, so it can be started or stopped at any time.
+
+```mermaid
+flowchart LR
+    F["Fuli"] -- "HSET mem:{id}" --> R[("Redis")]
+    R -- "SCAN mem:* + HGETALL<br/>(cached CACHE_SECONDS)" --> S["live_emodata<br/>server.py"]
+    S -- "/  (viewer.html)" --> B["Browser"]
+    S -- "/emotions.csv · /api/emotions" --> B
+```
+
+Requirements: Python 3.12, `redis`
+
+```bash
+cd live_emodata
+pip install redis
+python server.py            # http://127.0.0.1:<SERVER_PORT>
+```
+
+- The viewer plots V/A/D, radius, reward/stress, and the matched emotion term for every saved turn, and links each turn to its conversation text.
+- If `VAD.json` is placed in `live_emodata/`, the full lexicon is also drawn as a backdrop in VAD space (optional; see [Section 14](#14-third-party-data--licenses)).
+- Redis connection, bind address, and cache interval come from `live_emodata/.env` or CLI flags. See [`live_emodata/README.md`](live_emodata/README.md) for the full option table.
+- **Privacy:** user/session IDs are pseudonymized with HMAC (`EXPORT_SALT`), but user names and message text are shown as-is. The server listens on `127.0.0.1` by default; do not expose it without access control.
+
 ---
 
 ## 10. Configuration Reference
@@ -697,7 +728,7 @@ The first prototype (docs, edge, orchestrator, and an earlier Python-wrapped del
 
 ## 14. Third-Party Data & Licenses
 
-- **NRC-VAD Lexicon** — deltaEGO's emotion-term lookup uses the NRC Valence, Arousal, and Dominance Lexicon. Its license does not permit redistribution, so `VAD.json` is **not included** in this repository. To run deltaEGO, obtain the lexicon from its authors under their terms, convert it to the expected JSON format, and place it at `fuli/include/VAD_DB/VAD.json`.
+- **NRC-VAD Lexicon** — deltaEGO's emotion-term lookup uses the NRC Valence, Arousal, and Dominance Lexicon. Its license does not permit redistribution, so `VAD.json` is **not included** in this repository. To run deltaEGO, obtain the lexicon from its authors under their terms, convert it to the expected JSON format, and place it at `fuli/include/VAD_DB/VAD.json`. The live_emodata viewer can optionally use the same file (copy it into `live_emodata/`).
   <!-- TODO (Justin): link the conversion script if it is included, and describe what happens when the file is missing. -->
 - **bge-m3**, **Faiss**, **llama.cpp**, **TEI**, and other dependencies are used under their respective licenses.
 
