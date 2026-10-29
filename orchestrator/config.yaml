@@ -30,17 +30,24 @@ servers:
   Orchestrator_server_ip: "127.0.0.1:8080"
 
 vl_model:
+  # SGLang server (OpenAI-compatible API)
   address: "127.0.0.1"
   port: "8080"
-  alias: "Gemma4"
-  model_full: "Gemma4-26B-A4B-Uncensored-HauhauCS-Balanced-Q4_K_M.gguf"
+  # must match SGLang's --served-model-name (GET /get_model_info -> served_model_name)
+  alias: "gemma-4-26b-a4b-uncensored"
+  # matched against GET /get_model_info -> model_path
+  model_full: "AEON-7/Gemma-4-26B-A4B-it-Uncensored-NVFP4"
   temperature: 0.8
+  # shared by thinking + answer when enable_thinking is on
   max_token: 3000
   top_p: 0.9
+  # Qwen3 thinks by default; off keeps voice replies fast. Remove the key to use the server default.
+  enable_thinking: false
+  timeout: 60
 
 emotion_inference:
   # Fuli's C++ server does emotion (VAD) inference itself — this just tells
-  # it, as boolean flags, which backend to use: "openjev" | "5090"
-  backend: "5090"
-  # if backend is "openjev" and that call fails, Fuli should retry on 5090
+  # it, as boolean flags, which backend to use: "laya" | "5090"
+  backend: "laya"
+  # if backend is "laya" and that call fails, Fuli should retry on 5090
   fallback_to_5090: true

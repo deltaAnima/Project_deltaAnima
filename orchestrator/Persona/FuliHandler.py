@@ -11,12 +11,16 @@ not something we run locally before sending.
 
 from pathlib import Path
 from typing import Any, Dict, Optional
+import logging
+import time
 import requests
 
 import config
 from Persona.RAGHandler import Remembrance
 from Persona.EmotionHandler import Enigmata
 from Persona.RAG_schemas import CharacterContextResponse, ContextSaveResponse
+
+logger = logging.getLogger(__name__)
 
 
 class FuliHandler:
@@ -53,10 +57,9 @@ class FuliHandler:
 
     def _default_emotion_policy_raw(self) -> Dict[str, Any]:
         """
-        OCEAN/physics weights + backend flags (use_openjev/use_5090/fallback_to_5090).
-        Fuli currently accepts this as unparsed JSON and ignores it —
-        deltaEGO loads its own OCEAN/weights from its own yaml at startup
-        — but we still send it so nothing needs to change once that's wired up.
+        OCEAN/physics weights + backend flags (use_laya/use_5090/fallback_to_5090).
+        Fuli feeds this to deltaEGO on every request, so it is rebuilt per
+        call — an Enigmata.reload() takes effect on the very next turn.
         """
         return {
             "OCEAN": self.emotion_handler.ocean,
@@ -68,58 +71,83 @@ class FuliHandler:
 
     def query_character_context(
         self,
+        user_key: str,
+        scope_key: str,
         user_name: str,
         user_input: str,
         context: Optional[str] = None,
-        new_session: bool = False,
         rag_policy: Optional[Dict[str, Any]] = None,
         emotion_policy: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
         One round trip to Fuli. Body matches schemas::FuliContextRequest
-        exactly: user_name/user_input/context/new_session/rag_policy are
-        top-level fields, emotion_policy_raw is untyped JSON. Fuli embeds
-        the input, searches its DB, and runs the emotion engine itself,
-        then reports back memories + mood as a CharacterContextResponse
+        exactly: user_name/user_key/scope_key/user_input/context are
+        top-level fields, rag_policy/emotion_policy sit under "config".
+
+        `user_key` ("<platform>:<platform_user_id>") is the stable identity
+        Fuli hashes/locks/searches by; `scope_key` is where the user is
+        talking (e.g. "discord:<guild_id>:<channel_id>"), which Fuli uses
+        together with rag_policy.memory_config.scope to bound retrieval and
+        to resolve the session; `user_name` is just the display name.
+
+        Fuli embeds the input, searches its DB, and runs the emotion engine
+        itself, then reports back memories + mood as a CharacterContextResponse
         (Persona/RAG_schemas.py) — validated here, so a malformed or
         outdated Fuli response raises instead of silently corrupting the
         prompt downstream.
 
-        `new_session` is Character's own guess (first message from this
-        user, or one after a long enough gap) — MemoryRetriever owns the
-        actual session id/lifetime on Fuli's side; this just forces it to
-        mint a fresh one instead of reusing whatever's on file.
-
-        Returns {"memories": str, "emotion": [emotion_term], "emotion_state":
-        EmotionResult} — `emotion` is the short mood-tag list prompts want;
+        Returns {"memories": str, "recent_turns": [RecentTurn], "emotion":
+        [emotion_term], "emotion_state": EmotionResult} — `recent_turns` is
+        the latest saved turns, oldest first (the short-term history the VL
+        call replays); `emotion` is the short mood-tag list prompts want;
         `emotion_state` is deltaEGO's full VAD+resistance read-out, kept
         around for whatever wants the numbers later.
         """
         payload = {
             "user_name": user_name,
+            "user_key": user_key,
+            "scope_key": scope_key,
             "user_input": user_input,
             "context": context,
-            "new_session": new_session,
             "config": {
                 "rag_policy": rag_policy or self._default_rag_policy(),
-                "emotion_policy_raw": emotion_policy or self._default_emotion_policy_raw(),
+                "emotion_policy": emotion_policy or self._default_emotion_policy_raw(),
             },
         }
+        started = time.perf_counter()
         raw_response = self._post("/character/context", payload)
         result = CharacterContextResponse.model_validate(raw_response)
+        if logger.isEnabledFor(logging.DEBUG):
+            self._debug_context(user_key, scope_key, result, time.perf_counter() - started)
 
         return {
             "memories": self.rag_handler.flatten_hits(result.hits, user_name),
+            "recent_turns": result.recent_turns,
             "emotion": [result.emotion.emotion_term],
             "emotion_state": result.emotion,
         }
 
-    def save_context_memory(self, user_name: str, persona_response: str) -> ContextSaveResponse:
+    @staticmethod
+    def _debug_context(user_key: str, scope_key: str, result: CharacterContextResponse, seconds: float) -> None:
+        """DEBUG trace of one /character/context answer: what Fuli remembered and how it reads the mood."""
+        emotion = result.emotion
+        logger.debug(
+            "Fuli context for %s (scope %s) in %.0f ms: %d memory hit(s), %d recent turn(s), emotion=%s (%s)  similarity=%s",
+            user_key, scope_key, seconds * 1000, len(result.hits), len(result.recent_turns),
+            emotion.emotion_term, emotion.current_state, emotion.similarity,
+        )
+        for hit in result.hits:
+            logger.debug(
+                "  memory #%s  score=%.3f\n  user : %s\n  reply: %s",
+                hit.id, hit.score, hit.user_input[:300], hit.model_response[:300],
+            )
+
+    def save_context_memory(self, user_key: str, scope_key: str, user_name: str, persona_response: str) -> ContextSaveResponse:
         """
         Closes out the memory buffer query_character_context() opened for
-        `user_name` (POST /character/context_memory, schemas::FuliContextSaveRequest).
+        this user (POST /character/context_memory, schemas::FuliContextSaveRequest).
         Must be called exactly once per turn — Fuli refuses the *next*
-        query_character_context() for the same user_name until this runs
+        query_character_context() for the same user until this runs
         ("memory buffer already exists... a previous turn's
         HandleContextSaveRequest never ran"), confirmed against the live server.
 
@@ -128,6 +156,8 @@ class FuliHandler:
         """
         payload = {
             "user_name": user_name,
+            "user_key": user_key,
+            "scope_key": scope_key,
             "persona_name": self.character,
             "persona_response": persona_response,
         }

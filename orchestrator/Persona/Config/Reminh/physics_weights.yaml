@@ -5,11 +5,11 @@
 # 1. Big Five Personality Traits (OCEAN)
 # 0.0 ~ 1.0 range
 OCEAN:
-  Openness: 0.8
+  Openness: 0.6
   Conscientiousness: 0.7
   Extraversion: 0.4
-  Agreeableness: 0.9
-  Neuroticism: 0.2
+  Agreeableness: 0.6
+  Neuroticism: 0.3
 
 # 2. Stress & Reward Analysis Weights
 # Used for runFullAnalysis()
@@ -32,7 +32,7 @@ FormulaWeights:
     neg_neuroticism: 0.8
     
   resistance:
-    base: 0.5
+    base: 0.0
     conscientiousness: 0.4
     openness: -0.1
     clamp_min: 0.1

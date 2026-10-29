@@ -43,6 +43,9 @@ class MemoryQueryConfig(BaseModel):
     reference_timestamp: Optional[datetime] = (
         None  # Reference timestamp (defaults to current time)
     )
+    # Retrieval boundary relative to the request's user_key/scope_key
+    # (e.g. "user_in_scope" = only this user's memories from this scope)
+    scope: str = "user_in_scope"
 
 
 class KnowledgeQueryConfig(BaseModel):
@@ -110,6 +113,18 @@ class RetrievedHit(BaseModel):
     score: float
 
 
+class RecentTurn(BaseModel):
+    """One of the latest saved turns Fuli sends back verbatim (oldest first), no similarity search involved."""
+
+    id: int
+    user_key: str
+    user_name: str
+    user_input: str
+    persona_name: str
+    model_response: str
+    timestamp: int
+
+
 class EmotionDelta(BaseModel):
     v: float
     a: float
@@ -175,6 +190,8 @@ class CharacterContextResponse(BaseModel):
     """
 
     hits: List[RetrievedHit] = Field(default_factory=list)
+    # the short-term conversation history; `hits` only covers similarity recall
+    recent_turns: List[RecentTurn] = Field(default_factory=list)
     emotion: EmotionResult
 
 

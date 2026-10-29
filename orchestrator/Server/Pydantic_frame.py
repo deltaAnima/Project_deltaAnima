@@ -256,7 +256,8 @@ class DiscordBotTextRequest(BaseOrchestratorRequest):
         ----------------------------------------------------------------|
     """
 
-    request_type: Literal["discord_chat"]
+    # the /discord/chat route already says what this is, so the bot may omit it
+    request_type: Literal["discord_chat"] = "discord_chat"
 
     user_id: str
     user_name: str
@@ -274,13 +275,18 @@ class DiscordBotTextResponse(BaseModel):
     Specification:
         Name            | Output Types  | Contents                      |
         ----------------------------------------------------------------|
+        request_id      | str           | id of this turn (= SGLang rid)|
         status          | str           | "success", "error"            |
         output_text     | str           | AI generated response         |
+        error           | str           | reason, when status is error  |
+        emotion_tag     | str           | Reminh's mood after this turn |
         ----------------------------------------------------------------|
     """
 
+    request_id: Optional[str] = None
     status: str
-    output_text: bool | str
+    output_text: Optional[str] = None
+    error: Optional[str] = None
     emotion_tag: Optional[str] = None
 
 

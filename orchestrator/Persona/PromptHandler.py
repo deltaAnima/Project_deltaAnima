@@ -26,11 +26,15 @@ class PromptHandler:
         prompt_config = load_yaml(self.prompt_path)
         vad_config = load_yaml(self.vad_path)
 
-        self.reminh_data: Dict[str, Any] = prompt_config.get("Reminh_Prompt", {})
-        self.vad_data: Dict[str, Any] = vad_config.get("VAD_inference_prompt", {})
+        reminh_data = prompt_config.get("Reminh_Prompt", {})
+        vad_data = vad_config.get("VAD_inference_prompt", {})
 
-        if not self.reminh_data or not self.vad_data:
+        # validate before assigning so a bad yaml on reload leaves the old prompts intact
+        if not reminh_data or not vad_data:
             raise ValueError(f"YAML format error!!!: {self.prompt_path} / {self.vad_path}")
+
+        self.reminh_data: Dict[str, Any] = reminh_data
+        self.vad_data: Dict[str, Any] = vad_data
 
         self.reminh_basic_info: str = self._load_basic_info()
 
