@@ -1,0 +1,1054 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Emotion Parameter Viewer</title>
+<style>
+:root {
+  color-scheme: light;
+  --page: #f9f9f7; --surface: #fcfcfb; --ink: #0b0b0b; --ink2: #52514e; --muted: #898781;
+  --grid: #e1e0d9; --axis: #c3c2b7; --border: rgba(11,11,11,.10);
+  --hover: rgba(11,11,11,.045); --sel: rgba(42,120,214,.12);
+  --s-v: #2a78d6; --s-a: #eb6834; --s-d: #1baf7a; --s-r: #6250d6;
+  --s-rew: #008300; --s-str: #e87ba4; --s-cum: #2a78d6;
+  --seq-old: #b7d3f6; --seq-new: #104281;
+  --warn: #fab219; --shadow: 0 6px 24px rgba(0,0,0,.10);
+  --db-pt: #9ec5f4; --q-pt: #0d366b;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --page: #0d0d0d; --surface: #1a1a19; --ink: #f0efec; --ink2: #c3c2b7; --muted: #898781;
+    --grid: #2c2c2a; --axis: #383835; --border: rgba(255,255,255,.10);
+    --hover: rgba(255,255,255,.05); --sel: rgba(57,135,229,.20);
+    --s-v: #3987e5; --s-a: #d95926; --s-d: #199e70; --s-r: #9085e9;
+    --s-rew: #008300; --s-str: #d55181; --s-cum: #3987e5;
+    --seq-old: #1c5cab; --seq-new: #b7d3f6;
+    --db-pt: #256abf; --q-pt: #e6f0fd;
+    --shadow: 0 6px 24px rgba(0,0,0,.5);
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --page: #0d0d0d; --surface: #1a1a19; --ink: #f0efec; --ink2: #c3c2b7; --muted: #898781;
+  --grid: #2c2c2a; --axis: #383835; --border: rgba(255,255,255,.10);
+  --hover: rgba(255,255,255,.05); --sel: rgba(57,135,229,.20);
+  --s-v: #3987e5; --s-a: #d95926; --s-d: #199e70; --s-r: #9085e9;
+  --s-rew: #008300; --s-str: #d55181; --s-cum: #3987e5;
+  --seq-old: #1c5cab; --seq-new: #b7d3f6;
+  --db-pt: #256abf; --q-pt: #e6f0fd;
+  --shadow: 0 6px 24px rgba(0,0,0,.5);
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; background: var(--page); color: var(--ink);
+  font: 14px/1.5 system-ui, -apple-system, "Segoe UI", "Malgun Gothic", sans-serif;
+}
+main { max-width: 1200px; margin: 0 auto; padding: 20px 16px 64px; }
+h1 { font-size: 20px; margin: 0; font-weight: 650; }
+h2 { font-size: 15px; margin: 0 0 4px; font-weight: 600; }
+.sub { color: var(--ink2); font-size: 13px; margin: 0 0 12px; }
+header { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin-bottom: 16px; }
+header .grow { flex: 1; }
+#fname { color: var(--ink2); font-size: 13px; overflow-wrap: anywhere; }
+button, select, .filebtn {
+  font: inherit; font-size: 13px; color: var(--ink); background: var(--surface);
+  border: 1px solid var(--border); border-radius: 8px; padding: 6px 10px; cursor: pointer;
+}
+button:hover, .filebtn:hover { background: var(--hover); }
+.filebtn input { display: none; }
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 16px; margin-bottom: 16px; min-width: 0; }
+.filters { display: flex; flex-wrap: wrap; gap: 12px; align-items: end; margin-bottom: 16px; }
+.filters label { display: flex; flex-direction: column; gap: 3px; font-size: 12px; color: var(--ink2); }
+.filters select { max-width: 260px; }
+.seg { display: inline-flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+.seg button { border: 0; border-radius: 0; }
+.seg button[aria-pressed="true"] { background: var(--sel); font-weight: 600; }
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin-bottom: 16px; }
+.tile { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 12px 14px; }
+.tile .k { font-size: 12px; color: var(--ink2); }
+.tile .v { font-size: 22px; font-weight: 600; margin-top: 2px; overflow-wrap: anywhere; }
+.tile .d { font-size: 12px; color: var(--muted); }
+.panel + .panel { margin-top: 10px; }
+.phead { display: flex; flex-wrap: wrap; gap: 4px 16px; align-items: baseline; font-size: 13px; }
+.phead .t { font-weight: 600; }
+.key { display: inline-flex; align-items: center; gap: 6px; color: var(--ink2); }
+.key i { display: inline-block; width: 14px; height: 2px; border-radius: 1px; }
+.key b { color: var(--ink); font-variant-numeric: tabular-nums; font-weight: 600; }
+.plot-host { width: 100%; outline: none; border-radius: 6px; }
+.plot-host:focus-visible { box-shadow: 0 0 0 2px var(--s-v); }
+svg text { fill: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+.grid { stroke: var(--grid); stroke-width: 1; }
+.zero { stroke: var(--axis); stroke-width: 1; }
+.cross { stroke: var(--ink2); stroke-width: 1; pointer-events: none; }
+.selline { stroke: var(--s-v); stroke-width: 1; opacity: .7; pointer-events: none; }
+.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+.grid2 > .card { margin-bottom: 0; }
+@media (max-width: 820px) { .grid2 { grid-template-columns: 1fr; } }
+.legend { display: flex; gap: 14px; flex-wrap: wrap; font-size: 12px; color: var(--ink2); margin: 4px 0 6px; align-items: center; }
+.ramp { display: inline-block; width: 80px; height: 8px; border-radius: 4px; background: linear-gradient(90deg, var(--seq-old), var(--seq-new)); }
+.bars { display: grid; grid-template-columns: minmax(80px, max-content) 1fr; gap: 6px 10px; align-items: center; font-size: 13px; }
+.bars .lab { color: var(--ink2); overflow-wrap: anywhere; }
+.bars .track { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.bars .bar { height: 14px; background: var(--s-v); border-radius: 0 4px 4px 0; min-width: 2px; }
+.bars .num { font-variant-numeric: tabular-nums; color: var(--ink); white-space: nowrap; }
+.tablewrap { overflow: auto; max-height: 460px; border: 1px solid var(--border); border-radius: 8px; }
+table { border-collapse: collapse; width: 100%; font-size: 12.5px; }
+th, td { padding: 6px 10px; text-align: left; border-bottom: 1px solid var(--grid); white-space: nowrap; }
+th { position: sticky; top: 0; background: var(--surface); color: var(--ink2); font-weight: 600; z-index: 1; }
+td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+td.txt { white-space: normal; min-width: 240px; max-width: 420px; color: var(--ink2); }
+#turns tbody tr { cursor: pointer; }
+#turns tbody tr:hover, #turns tbody tr.hov { background: var(--hover); }
+#turns tbody tr.sel { background: var(--sel); }
+.badge { display: inline-flex; gap: 4px; align-items: center; font-size: 12px; padding: 1px 8px; border-radius: 999px; border: 1px solid var(--warn); color: var(--ink); white-space: nowrap; }
+.badge::before { content: "⚠"; color: var(--warn); }
+.ok { color: var(--muted); font-size: 12px; }
+#tip {
+  position: fixed; z-index: 20; pointer-events: none; background: var(--surface); color: var(--ink);
+  border: 1px solid var(--border); border-radius: 8px; box-shadow: var(--shadow);
+  padding: 8px 10px; font-size: 12px; min-width: 190px; max-width: 300px; display: none;
+}
+#tip .h { font-weight: 600; margin-bottom: 2px; }
+#tip .m { color: var(--ink2); margin-bottom: 6px; }
+#tip .r { display: flex; align-items: center; gap: 6px; }
+#tip .r i { width: 12px; height: 2px; border-radius: 1px; flex: none; }
+#tip .r b { font-variant-numeric: tabular-nums; min-width: 56px; }
+#tip .r span { color: var(--ink2); }
+#tip .q { color: var(--ink2); margin-top: 6px; border-top: 1px solid var(--grid); padding-top: 6px; overflow-wrap: anywhere; }
+#empty {
+  border: 2px dashed var(--axis); border-radius: 16px; padding: 56px 16px; text-align: center; color: var(--ink2);
+}
+#empty.drag, body.drag #empty { border-color: var(--s-v); background: var(--sel); }
+#empty p { margin: 6px 0; }
+#err { color: #d03b3b; font-weight: 600; }
+#drawer {
+  position: fixed; top: 0; right: 0; height: 100%; width: min(460px, 100%); z-index: 30;
+  background: var(--surface); border-left: 1px solid var(--border); box-shadow: var(--shadow);
+  transform: translateX(105%); transition: transform .18s ease; display: flex; flex-direction: column;
+}
+#drawer.open { transform: none; }
+#drawer .top { display: flex; gap: 8px; align-items: center; padding: 12px 16px; border-bottom: 1px solid var(--border); }
+#drawer .top .grow { flex: 1; font-weight: 600; }
+#drawer .body { overflow: auto; padding: 16px; }
+#drawer .meta { color: var(--ink2); font-size: 13px; margin-bottom: 12px; }
+#drawer h3 { font-size: 13px; margin: 16px 0 6px; color: var(--ink2); font-weight: 600; }
+.msg { white-space: pre-wrap; overflow-wrap: anywhere; background: var(--page); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; font-size: 13px; }
+.kv { display: grid; grid-template-columns: 1fr auto; gap: 2px 12px; font-size: 12.5px; }
+.kv span:nth-child(odd) { color: var(--ink2); overflow-wrap: anywhere; }
+.kv span:nth-child(even) { text-align: right; font-variant-numeric: tabular-nums; }
+.hint { color: var(--muted); font-size: 12px; }
+.cubebar { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; margin-bottom: 6px; }
+.cubebar input[type="search"] { font: inherit; font-size: 13px; color: var(--ink); background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 5px 10px; min-width: 0; width: 180px; }
+.chk { display: inline-flex; gap: 5px; align-items: center; font-size: 13px; color: var(--ink2); cursor: pointer; }
+.key i.dot { width: 8px; height: 8px; border-radius: 50%; }
+.key i.dot.ring { background: transparent; border: 2px solid var(--ink); width: 10px; height: 10px; }
+canvas.cube { display: block; width: 100%; cursor: grab; touch-action: none; border-radius: 8px; }
+canvas.cube:active { cursor: grabbing; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Emotion Parameter Viewer</h1>
+    <span id="fname"></span>
+    <span class="grow"></span>
+    <label class="filebtn">Open file<input id="file" type="file" accept=".csv,.json,text/csv,application/json" multiple></label>
+    <button id="theme" type="button" title="Toggle light/dark">Theme</button>
+  </header>
+
+  <section id="empty">
+    <p>Drag <strong>emotions.csv</strong> into this window, or click <strong>Open file</strong> at the top right.</p>
+    <p>Add <strong>VAD.json</strong> (the emotion lexicon) too to show the term distribution in the 3D cube.</p>
+    <p id="lexstate" class="hint"></p>
+    <p class="hint">Files are read only in this browser and never sent anywhere.</p>
+    <p id="err"></p>
+  </section>
+
+  <div id="app" hidden>
+    <div class="filters" id="filters"></div>
+    <div class="tiles" id="tiles"></div>
+
+    <section class="card">
+      <h2>VAD by Turn</h2>
+      <p class="sub">Hover to highlight the same turn on every chart; click to see the original conversation. With a chart focused, use ←/→ to move between turns.</p>
+      <div id="vad"></div>
+    </section>
+
+    <section class="card">
+      <h2>Reward · Stress</h2>
+      <p class="sub">instant values are the response to that turn; cumulative.total is the running total.</p>
+      <div id="rs"></div>
+    </section>
+
+    <section class="card">
+      <h2>VAD 3D Cube</h2>
+      <p class="sub" id="cubesub"></p>
+      <div id="cube" class="plot-host"></div>
+    </section>
+
+    <section class="card">
+      <h2>Raw Distribution: Database and Queries</h2>
+      <p class="sub" id="cube2sub"></p>
+      <div id="cube2" class="plot-host"></div>
+    </section>
+
+    <section class="card">
+      <h2>Emotion Term Frequency</h2>
+      <p class="sub" id="termsub"></p>
+      <div id="terms" class="bars"></div>
+    </section>
+
+    <section class="card">
+      <h2>Value Change Check</h2>
+      <p class="sub" id="constsub"></p>
+      <div class="tablewrap"><table id="consts"></table></div>
+    </section>
+
+    <section class="card">
+      <h2>Turns</h2>
+      <p class="sub">Click a row to open its details.</p>
+      <div class="tablewrap"><table id="turns"></table></div>
+    </section>
+  </div>
+</main>
+
+<aside id="drawer" aria-hidden="true">
+  <div class="top">
+    <span class="grow" id="dtitle"></span>
+    <button type="button" id="dprev" title="Previous turn (←)">Previous</button>
+    <button type="button" id="dnext" title="Next turn (→)">Next</button>
+    <button type="button" id="dclose" title="Close (Esc)">Close</button>
+  </div>
+  <div class="body" id="dbody"></div>
+</aside>
+<div id="tip" role="status"></div>
+
+<script>window.EMBEDDED_CSV = null; window.EMBEDDED_VAD = null;</script>
+<script>
+'use strict';
+const NS = 'http://www.w3.org/2000/svg';
+const $ = s => document.querySelector(s);
+const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+
+function svgEl(tag, attrs, parent) {
+  const e = document.createElementNS(NS, tag);
+  if (attrs) for (const k in attrs) e.setAttribute(k, attrs[k]);
+  if (parent) parent.appendChild(e);
+  return e;
+}
+// All text goes in via append()/textContent — CSV contents are never parsed as HTML.
+function h(tag, props, ...kids) {
+  const e = document.createElement(tag);
+  if (props) for (const k in props) {
+    if (k === 'class') e.className = props[k];
+    else if (k === 'text') e.textContent = props[k];
+    else if (k.startsWith('on')) e.addEventListener(k.slice(2), props[k]);
+    else e.setAttribute(k, props[k]);
+  }
+  for (const c of kids) if (c != null) e.append(c);
+  return e;
+}
+
+// ---------- data ----------
+const STR_COLS = new Set(['user', 'session', 'scope', 'user_name', 'persona', 'user_text', 'persona_text',
+  'emotion_term', 'emotion_terms', 'front.expression']);
+const S = {
+  V: { key: 'V', label: 'V (Valence)', color: '--s-v' },
+  A: { key: 'A', label: 'A (Arousal)', color: '--s-a' },
+  D: { key: 'D', label: 'D (Dominance)', color: '--s-d' },
+  R: { key: 'radius', label: 'radius', color: '--s-r' },
+  rew: { key: 'instant.reward', label: 'Reward instant.reward', color: '--s-rew' },
+  str: { key: 'instant.stress', label: 'Stress instant.stress', color: '--s-str' },
+  cum: { key: 'cumulative.total', label: 'Cumulative cumulative.total', color: '--s-cum' },
+};
+const TIP_SERIES = [S.V, S.A, S.D, S.R, S.rew, S.str, S.cum];
+
+let ALL = [], ROWS = [], COLS = [], NUMCOLS = [];
+const st = { scope: '', user: '', session: '', x: 'turn', hover: null, sel: null };
+const charts = [];
+const cubes = [];
+
+function parseCSV(text) {
+  text = text.replace(/^﻿/, '');
+  const rows = []; let row = [], f = '', q = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (q) {
+      if (c === '"') { if (text[i + 1] === '"') { f += '"'; i++; } else q = false; }
+      else f += c;
+    } else if (c === '"') q = true;
+    else if (c === ',') { row.push(f); f = ''; }
+    else if (c === '\n') { row.push(f); rows.push(row); row = []; f = ''; }
+    else if (c !== '\r') f += c;
+  }
+  if (f !== '' || row.length) { row.push(f); rows.push(row); }
+  const head = rows.shift() || [];
+  return rows.filter(r => r.length > 1).map(r => Object.fromEntries(head.map((k, i) => [k, r[i] ?? ''])));
+}
+
+function load(text, name) {
+  let recs;
+  try { recs = parseCSV(text); } catch (e) { return showError('Could not read the CSV: ' + e.message); }
+  if (!recs.length || !('V' in recs[0])) return showError('This is not an emotions.csv file with V/A/D columns.');
+  COLS = Object.keys(recs[0]);
+  NUMCOLS = COLS.filter(c => c !== 'timestamp' && !STR_COLS.has(c)
+    && recs.some(r => r[c] !== '') && recs.every(r => r[c] === '' || isFinite(Number(r[c]))));
+  ALL = recs.map(r => {
+    const o = { raw: r, _t: Number(r.timestamp) * 1000 || null };
+    for (const c of NUMCOLS) o[c] = r[c] === '' ? null : Number(r[c]);
+    return o;
+  });
+  ALL.sort((a, b) => (a._t || 0) - (b._t || 0));
+  ALL.forEach((r, i) => { r._g = i + 1; });
+  Object.assign(st, { scope: '', user: '', session: '', hover: null, sel: null });
+  $('#fname').textContent = name || '';
+  $('#err').textContent = '';
+  $('#empty').hidden = true;
+  $('#app').hidden = false;
+  buildFilters();
+  applyFilters();
+}
+function showError(msg) { $('#empty').hidden = false; $('#err').textContent = msg; }
+
+// ---------- filters ----------
+function userOf(r) { return r.raw.user_name || r.raw.user || ''; }
+function buildFilters() {
+  const box = $('#filters'); box.replaceChildren();
+  const addSelect = (label, field, getter, describe) => {
+    const counts = new Map();
+    for (const r of ALL) { const v = getter(r); if (v) counts.set(v, (counts.get(v) || 0) + 1); }
+    if (counts.size < 1) return;
+    const sel = h('select', { onchange: e => { st[field] = e.target.value; applyFilters(); } },
+      h('option', { value: '', text: `All (${counts.size})` }));
+    for (const [v, n] of [...counts].sort((a, b) => b[1] - a[1]))
+      sel.append(h('option', { value: v, text: `${describe ? describe(v) : v} · ${n} turns` }));
+    box.append(h('label', null, label, sel));
+  };
+  if (COLS.includes('scope')) addSelect('Channel', 'scope', r => r.raw.scope);
+  addSelect('User', 'user', userOf);
+  if (COLS.includes('session')) {
+    const who = new Map();
+    for (const r of ALL) if (r.raw.session && !who.has(r.raw.session)) who.set(r.raw.session, userOf(r));
+    addSelect('Session', 'session', r => r.raw.session, v => `${v.slice(0, 6)} (${who.get(v) || '?'})`);
+  }
+  const seg = h('div', { class: 'seg', role: 'group' });
+  for (const [v, t] of [['turn', 'Turn order'], ['time', 'Real time']]) {
+    seg.append(h('button', { type: 'button', 'aria-pressed': String(st.x === v), text: t, onclick: () => {
+      st.x = v; seg.querySelectorAll('button').forEach(b => b.setAttribute('aria-pressed', String(b.textContent === t)));
+      renderCharts();
+    } }));
+  }
+  box.append(h('label', null, 'X axis', seg));
+}
+function applyFilters() {
+  ROWS = ALL.filter(r => (!st.scope || r.raw.scope === st.scope) && (!st.user || userOf(r) === st.user)
+    && (!st.session || r.raw.session === st.session));
+  ROWS.forEach((r, i) => { r._i = i + 1; });
+  const inSet = new Set(ROWS);
+  st.hover = null;
+  if (st.sel && !inSet.has(st.sel)) closeDrawer();
+  renderAll();
+}
+
+// ---------- formatting ----------
+const pad = n => String(n).padStart(2, '0');
+function fmtDate(ms, withDate = true) {
+  if (!ms) return '—';
+  const d = new Date(ms);
+  const t = `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  return withDate ? `${pad(d.getMonth() + 1)}/${pad(d.getDate())} ${t}` : t;
+}
+function fmtFull(ms) { if (!ms) return '—'; const d = new Date(ms); return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`; }
+function fmtDur(ms) {
+  const s = Math.round(ms / 1000);
+  if (s < 60) return `${s}s`;
+  if (s < 3600) return `${Math.round(s / 60)}m`;
+  if (s < 86400) return `${Math.floor(s / 3600)}h ${Math.round(s % 3600 / 60)}m`;
+  return `${Math.floor(s / 86400)}d ${Math.round(s % 86400 / 3600)}h`;
+}
+const fmtV = v => v == null ? '—' : (Math.abs(v) >= 100 ? v.toFixed(0) : v.toFixed(3));
+function niceTicks(a, b, n) {
+  const step0 = (b - a) / Math.max(1, n);
+  const p = Math.pow(10, Math.floor(Math.log10(step0)));
+  const f = step0 / p;
+  const step = (f < 1.5 ? 1 : f < 3 ? 2 : f < 7 ? 5 : 10) * p;
+  const out = [];
+  for (let v = Math.floor(a / step) * step; v <= b + step * 1e-9; v += step) out.push(+v.toFixed(10));
+  if (out[out.length - 1] < b - 1e-12) out.push(+(out[out.length - 1] + step).toFixed(10));
+  out.step = step;
+  return out;
+}
+const tickDigits = step => Math.max(0, Math.min(4, -Math.floor(Math.log10(step) + 1e-9)));
+
+// ---------- line chart (one panel, shared crosshair) ----------
+class LineChart {
+  constructor(parent, series, title, height = 140) {
+    this.series = series; this.height = height;
+    const head = h('div', { class: 'phead' });
+    if (title) head.append(h('span', { class: 't', text: title }));
+    this.vals = series.map(s => {
+      const b = h('b', { text: '—' });
+      const k = h('span', { class: 'key' }, h('i', { style: `background:var(${s.color})` }), s.label, b);
+      head.append(k);
+      return b;
+    });
+    this.host = h('div', { class: 'plot-host', tabindex: '0', role: 'img', 'aria-label': (title || '') + ' by turn' });
+    this.host.addEventListener('keydown', e => keyNav(e));
+    parent.append(h('div', { class: 'panel' }, head, this.host));
+    charts.push(this);
+  }
+  xOf(r) { return st.x === 'time' ? r._t : r._i; }
+  render() {
+    const host = this.host; host.replaceChildren(); this.cross = null;
+    const n = ROWS.length; if (!n) return;
+    const W = Math.max(260, host.clientWidth), H = this.height, m = { t: 8, r: 12, b: 22, l: 48 };
+    const svg = svgEl('svg', { width: W, height: H, viewBox: `0 0 ${W} ${H}` }, host);
+    let x0 = this.xOf(ROWS[0]), x1 = this.xOf(ROWS[n - 1]);
+    if (x0 == null || x1 == null) { x0 = 1; x1 = n; }
+    if (x0 === x1) { x0 -= 1; x1 += 1; }
+    let y0 = 0, y1 = 0;
+    for (const s of this.series) for (const r of ROWS) { const v = r[s.key]; if (v != null) { if (v < y0) y0 = v; if (v > y1) y1 = v; } }
+    if (y0 === y1) y1 = y0 + 1;
+    const yt = niceTicks(y0, y1, 4); y0 = Math.min(y0, yt[0]); y1 = Math.max(y1, yt[yt.length - 1]);
+    const sx = v => m.l + (v - x0) / (x1 - x0) * (W - m.l - m.r);
+    const sy = v => H - m.b - (v - y0) / (y1 - y0) * (H - m.t - m.b);
+    this.sx = sx; this.sy = sy;
+    const dg = tickDigits(yt.step);
+    for (const t of yt) {
+      svgEl('line', { x1: m.l, x2: W - m.r, y1: sy(t), y2: sy(t), class: Math.abs(t) < 1e-12 ? 'zero' : 'grid' }, svg);
+      svgEl('text', { x: m.l - 6, y: sy(t) + 4, 'text-anchor': 'end' }, svg).textContent = t.toFixed(dg);
+    }
+    const nx = Math.max(2, Math.floor((W - m.l) / 90));
+    if (st.x === 'time') {
+      for (let i = 0; i <= nx; i++) {
+        const t = x0 + (x1 - x0) * i / nx;
+        svgEl('text', { x: sx(t), y: H - 5, 'text-anchor': i === 0 ? 'start' : i === nx ? 'end' : 'middle' }, svg)
+          .textContent = fmtDate(t, x1 - x0 > 86400000);
+      }
+    } else {
+      const xt = niceTicks(x0, x1, nx).filter(t => t >= x0 && t <= x1 && Number.isInteger(t));
+      for (const t of xt) svgEl('text', { x: sx(t), y: H - 5, 'text-anchor': 'middle' }, svg).textContent = String(t);
+    }
+    if (st.sel && ROWS.includes(st.sel)) {
+      const x = sx(this.xOf(st.sel));
+      svgEl('line', { x1: x, x2: x, y1: m.t, y2: H - m.b, class: 'selline' }, svg);
+    }
+    const surface = css('--surface');
+    for (const s of this.series) {
+      const col = css(s.color);
+      let d = '', pen = false;
+      for (const r of ROWS) {
+        const v = r[s.key];
+        if (v == null) { pen = false; continue; }
+        d += (pen ? 'L' : 'M') + sx(this.xOf(r)).toFixed(1) + ',' + sy(v).toFixed(1); pen = true;
+      }
+      svgEl('path', { d, fill: 'none', stroke: col, 'stroke-width': 2, 'stroke-linejoin': 'round', 'stroke-linecap': 'round' }, svg);
+      if (n <= 40) for (const r of ROWS) {
+        const v = r[s.key]; if (v == null) continue;
+        svgEl('circle', { cx: sx(this.xOf(r)), cy: sy(v), r: 4, fill: col, stroke: surface, 'stroke-width': 2 }, svg);
+      }
+    }
+    this.cross = svgEl('line', { y1: m.t, y2: H - m.b, class: 'cross', visibility: 'hidden' }, svg);
+    this.dots = this.series.map(s => svgEl('circle', { r: 5, fill: css(s.color), stroke: surface, 'stroke-width': 2, visibility: 'hidden', 'pointer-events': 'none' }, svg));
+    const hit = svgEl('rect', { x: m.l - 8, y: 0, width: W - m.l - m.r + 16, height: H, fill: 'transparent' }, svg);
+    const px = e => e.clientX - svg.getBoundingClientRect().left;
+    hit.addEventListener('pointermove', e => setHover(this.nearest(px(e)), e));
+    hit.addEventListener('pointerleave', () => setHover(null));
+    hit.addEventListener('click', e => select(this.nearest(px(e))));
+    this.updateHover();
+  }
+  nearest(px) {
+    let lo = 0, hi = ROWS.length - 1;
+    while (hi - lo > 1) { const mid = (lo + hi) >> 1; if (this.sx(this.xOf(ROWS[mid])) < px) lo = mid; else hi = mid; }
+    return Math.abs(this.sx(this.xOf(ROWS[lo])) - px) <= Math.abs(this.sx(this.xOf(ROWS[hi])) - px) ? ROWS[lo] : ROWS[hi];
+  }
+  updateHover() {
+    const r = st.hover || st.sel || ROWS[ROWS.length - 1];
+    this.series.forEach((s, i) => { this.vals[i].textContent = r ? fmtV(r[s.key]) : '—'; });
+    if (!this.cross) return;
+    const hr = st.hover;
+    const vis = hr ? 'visible' : 'hidden';
+    this.cross.setAttribute('visibility', vis);
+    this.dots.forEach(d => d.setAttribute('visibility', 'hidden'));
+    if (!hr) return;
+    const x = this.sx(this.xOf(hr));
+    this.cross.setAttribute('x1', x); this.cross.setAttribute('x2', x);
+    this.series.forEach((s, i) => {
+      const v = hr[s.key]; if (v == null) return;
+      const d = this.dots[i];
+      d.setAttribute('cx', x); d.setAttribute('cy', this.sy(v)); d.setAttribute('visibility', 'visible');
+    });
+  }
+}
+
+// ---------- VAD lexicon ----------
+let LEX = null, LEXMAP = new Map(), LEXNAME = '';
+function loadLexicon(arr, name) {
+  if (!Array.isArray(arr) || !arr.length || !('valence' in arr[0]))
+    return showError('The VAD lexicon must be JSON shaped like [{"term", "valence", "arousal", "dominance"}, ...].');
+  LEX = arr.filter(x => [x.valence, x.arousal, x.dominance].every(v => isFinite(Number(v))))
+    .map(x => ({ term: String(x.term), p: [Number(x.valence), Number(x.arousal), Number(x.dominance)] }));
+  LEXMAP = new Map(LEX.map(x => [x.term, x]));
+  LEXNAME = name || 'VAD.json';
+  $('#lexstate').textContent = `VAD lexicon loaded: ${LEXNAME} (${LEX.length.toLocaleString()} terms)`;
+  if (ROWS.length) { renderCube(); }
+}
+const statePt = r => (r.V == null || r.A == null || r.D == null) ? null : [r.V, r.A, r.D];
+const termOf = r => LEXMAP.get(r.raw.emotion_term) || null;
+const dist3 = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
+
+// ---------- VAD 3D cube (canvas, no external libraries) ----------
+function mixHex(a, b, t) {
+  const p = s => [1, 3, 5].map(i => parseInt(s.slice(i, i + 2), 16));
+  const A = p(a), B = p(b);
+  return '#' + A.map((v, i) => Math.round(v + (B[i] - v) * t).toString(16).padStart(2, '0')).join('');
+}
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+const VIEWS = { default: [-0.62, 0.38], va: [0, 0], vd: [0, Math.PI / 2 - 0.0001], ad: [-Math.PI / 2, 0] };
+// variant 'traj': state trajectory among nearby terms.
+// variant 'db': the whole lexicon (database, light) with every turn's state (query, dark).
+class Cube {
+  constructor(host, variant, subEl) {
+    this.host = host; this.variant = variant; this.subEl = subEl;
+    this.mode = variant === 'db' ? 'full' : 'data'; this.zoom = 1;
+    [this.yaw, this.pitch] = VIEWS.default;
+    this.lexHover = null; this.hitState = []; this.hitLex = [];
+    this.buildControls();
+    const c = this.canvas = h('canvas', { class: 'cube', tabindex: '0', role: 'img', 'aria-label': variant === 'db'
+      ? 'VAD 3D cube: full lexicon distribution and query positions' : 'VAD 3D cube: emotion term distribution and state trajectory' });
+    host.append(c, h('p', { class: 'hint', text: 'Drag: rotate · Wheel: zoom · Double-click: reset view · Click a point: turn details' }));
+    let drag = null;
+    c.addEventListener('pointerdown', e => {
+      drag = { x: e.clientX, y: e.clientY, yaw: this.yaw, pitch: this.pitch, moved: false };
+      c.setPointerCapture(e.pointerId);
+    });
+    c.addEventListener('pointermove', e => {
+      if (drag) {
+        const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
+        if (!drag.moved && Math.abs(dx) + Math.abs(dy) > 3) { drag.moved = true; this.lexHover = null; setHover(null); }
+        if (drag.moved) {
+          this.yaw = drag.yaw + dx * 0.01;
+          this.pitch = clamp(drag.pitch + dy * 0.01, -Math.PI / 2 + 0.0001, Math.PI / 2 - 0.0001);
+          this.draw();
+          return;
+        }
+      }
+      this.hoverAt(e);
+    });
+    c.addEventListener('pointerup', e => {
+      const moved = drag && drag.moved; drag = null;
+      if (!moved) { const hit = this.pick(e); if (hit && hit.row) select(hit.row); }
+    });
+    c.addEventListener('pointerleave', () => { if (!drag) { this.lexHover = null; setHover(null); } });
+    c.addEventListener('wheel', e => { e.preventDefault(); this.zoom = clamp(this.zoom * Math.exp(-e.deltaY * 0.0015), 0.4, 12); this.draw(); }, { passive: false });
+    c.addEventListener('dblclick', () => this.setView('default'));
+    c.addEventListener('keydown', e => keyNav(e));
+  }
+  buildControls() {
+    const db = this.variant === 'db';
+    const bar = h('div', { class: 'cubebar' });
+    const seg = (items, onPick, pressed) => {
+      const s = h('span', { class: 'seg' });
+      for (const [val, label] of items) {
+        const b = h('button', { type: 'button', text: label });
+        if (pressed !== undefined) b.setAttribute('aria-pressed', String(val === pressed));
+        b.addEventListener('click', () => {
+          if (pressed !== undefined) s.querySelectorAll('button').forEach(x => x.setAttribute('aria-pressed', String(x === b)));
+          onPick(val);
+        });
+        s.append(b);
+      }
+      bar.append(s);
+    };
+    const chk = label => {
+      const i = h('input', { type: 'checkbox' }); i.checked = true;
+      i.addEventListener('change', () => this.draw());
+      bar.append(h('label', { class: 'chk' }, i, label));
+      return i;
+    };
+    if (!db) seg([['data', 'Around data'], ['full', 'Full cube (−1 to 1)']], v => { this.mode = v; this.zoom = 1; this.render(); }, 'data');
+    seg([['default', 'Default view'], ['va', 'V–A'], ['vd', 'V–D'], ['ad', 'A–D']], v => this.setView(v));
+    this.showLex = db ? null : chk('Lexicon terms');
+    this.showLabels = chk(db ? 'Matched term labels' : 'Term labels');
+    this.q = h('input', { type: 'search', placeholder: 'Find a term in the lexicon', 'aria-label': 'Find a term in the lexicon' });
+    this.q.addEventListener('input', () => this.draw());
+    bar.append(this.q);
+
+    const legend = h('div', { class: 'legend' });
+    const key = (style, label) => legend.append(h('span', { class: 'key' }, h('i', { class: 'dot', style }), label));
+    if (db) {
+      key('background:var(--db-pt)', 'Database (full VAD lexicon)');
+      key('background:var(--q-pt)', 'Queries (VAD state of each turn)');
+      key('background:transparent;border:2px solid var(--q-pt);width:10px;height:10px', 'Lexicon terms matched by queries');
+    } else {
+      key('background:var(--muted);opacity:.6', 'Lexicon terms');
+      key('background:var(--s-a)', 'Emotion terms in this data');
+      legend.append(h('span', { text: 'State trajectory: earlier' }), h('span', { class: 'ramp' }), h('span', { text: 'recent' }));
+    }
+    legend.append(h('span', { class: 'key' }, h('i', { class: 'dot ring' }), 'Selected/hovered turn → matched term'));
+    this.host.append(bar, legend);
+  }
+  setView(v) { [this.yaw, this.pitch] = VIEWS[v]; this.zoom = 1; this.draw(); }
+  computeBox() {
+    if (this.mode === 'full') return { c: [0, 0, 0], s: 1 };
+    const pts = [];
+    for (const r of ROWS) { const p = statePt(r); if (p) pts.push(p); const t = termOf(r); if (t) pts.push(t.p); }
+    if (!pts.length) return { c: [0, 0, 0], s: 1 };
+    const lo = [0, 1, 2].map(i => Math.min(...pts.map(p => p[i])));
+    const hi = [0, 1, 2].map(i => Math.max(...pts.map(p => p[i])));
+    const c = lo.map((v, i) => (v + hi[i]) / 2);
+    const s = Math.max(0.05, ...hi.map((v, i) => (v - lo[i]) / 2)) * 1.25;
+    return { c, s };
+  }
+  render() {
+    const W = Math.max(280, this.host.clientWidth), H = Math.round(clamp(W * 0.55, 340, 580));
+    const dpr = window.devicePixelRatio || 1;
+    Object.assign(this.canvas, { width: Math.round(W * dpr), height: Math.round(H * dpr) });
+    this.canvas.style.height = H + 'px';
+    this.W = W; this.H = H; this.dpr = dpr;
+    this.box = this.computeBox();
+    this.draw();
+  }
+  norm(p) { const { c, s } = this.box; return [(p[0] - c[0]) / s, (p[1] - c[1]) / s, (p[2] - c[2]) / s]; }
+  // World axes: x = V (right), y = A (up), z = D (depth).
+  projN(n) {
+    const cy = Math.cos(this.yaw), sy = Math.sin(this.yaw), cp = Math.cos(this.pitch), sp = Math.sin(this.pitch);
+    const x1 = n[0] * cy + n[2] * sy, z1 = -n[0] * sy + n[2] * cy;
+    const y2 = n[1] * cp - z1 * sp, z2 = n[1] * sp + z1 * cp;
+    const f = 6 / (6 - z2), k = Math.min(this.W, this.H) * 0.235 * this.zoom;
+    return { x: this.W / 2 + x1 * k * f, y: this.H / 2 - y2 * k * f, z: z2, f };
+  }
+  proj(p) { return this.projN(this.norm(p)); }
+  inBox(n) { return Math.abs(n[0]) <= 1.0001 && Math.abs(n[1]) <= 1.0001 && Math.abs(n[2]) <= 1.0001; }
+  draw() {
+    if (!this.box) return;
+    const ctx = this.canvas.getContext('2d'), { W, H } = this;
+    ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
+    ctx.clearRect(0, 0, W, H);
+    const C = { grid: css('--grid'), axis: css('--axis'), muted: css('--muted'), ink: css('--ink'), ink2: css('--ink2'),
+      surface: css('--surface'), used: css('--s-a'), old: css('--seq-old'), neu: css('--seq-new'), sel: css('--s-v'),
+      db: css('--db-pt'), q: css('--q-pt') };
+    const db = this.variant === 'db';
+    ctx.font = '11px system-ui, -apple-system, "Segoe UI", "Malgun Gothic", sans-serif';
+    ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+    const line = (a, b, color, w) => { ctx.strokeStyle = color; ctx.lineWidth = w; ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke(); };
+    const text = (s, p, color, align = 'left', dx = 0, dy = 0) => { ctx.fillStyle = color; ctx.textAlign = align; ctx.fillText(s, p.x + dx, p.y + dy); };
+    const { c, s } = this.box;
+
+    // Cube frame. Each axis is labelled on whichever of its 4 parallel edges sits on the
+    // outside of the current view (lowest on screen for V/D, leftmost for A).
+    const mid = this.projN([0, 0, 0]);
+    const axisEdges = [0, 1, 2].map(k => {
+      const others = [0, 1, 2].filter(i => i !== k);
+      let best = null;
+      for (const u of [-1, 1]) for (const v of [-1, 1]) {
+        const base = [0, 0, 0]; base[others[0]] = u; base[others[1]] = v;
+        const m = this.projN(base);
+        const score = k === 1 ? -m.x : m.y;
+        if (!best || score > best.score) best = { base, score };
+      }
+      return best.base;
+    });
+    for (let k = 0; k < 3; k++) {
+      const others = [0, 1, 2].filter(i => i !== k);
+      for (const u of [-1, 1]) for (const v of [-1, 1]) {
+        const a = [0, 0, 0]; a[others[0]] = u; a[others[1]] = v;
+        const b = a.slice(); a[k] = -1; b[k] = 1;
+        const isAxis = axisEdges[k][others[0]] === u && axisEdges[k][others[1]] === v;
+        line(this.projN(a), this.projN(b), isAxis ? C.axis : C.grid, 1);
+      }
+    }
+    const outward = (p, d) => {
+      const dx = p.x - mid.x, dy = p.y - mid.y, l = Math.hypot(dx, dy) || 1;
+      return { x: p.x + dx / l * d, y: p.y + dy / l * d };
+    };
+    // Zero lines through the true origin, where it falls inside the box.
+    const o = this.norm([0, 0, 0]);
+    for (let k = 0; k < 3; k++) {
+      const others = [0, 1, 2].filter(i => i !== k);
+      if (others.some(i => Math.abs(o[i]) > 1)) continue;
+      const a = o.slice(), b = o.slice(); a[k] = -1; b[k] = 1;
+      line(this.projN(a), this.projN(b), C.axis, 1);
+    }
+    // Ticks and axis names.
+    const names = ['V (Valence)', 'A (Arousal)', 'D (Dominance)'];
+    const dg = s >= 0.5 ? 1 : s >= 0.05 ? 2 : 3;
+    // Axis edges meet at shared corners, so drop any tick that would sit on one already drawn.
+    const ticksAt = [];
+    for (let k = 0; k < 3; k++) {
+      for (const t of [-1, 0, 1]) {
+        const n = axisEdges[k].slice(); n[k] = t;
+        const p = outward(this.projN(n), 16);
+        if (ticksAt.some(q => Math.abs(q.x - p.x) < 34 && Math.abs(q.y - p.y) < 14)) continue;
+        ticksAt.push(p);
+        text((c[k] + t * s).toFixed(dg), p, C.muted, 'center', 0, 4);
+      }
+    }
+    ctx.font = '600 12px system-ui, -apple-system, "Segoe UI", "Malgun Gothic", sans-serif';
+    for (let k = 0; k < 3; k++) {
+      const n = axisEdges[k].slice(); n[k] = 0;
+      const p = this.projN(n), w = ctx.measureText(names[k]).width;
+      const dx = p.x - mid.x, dy = p.y - mid.y, l = Math.hypot(dx, dy) || 1;
+      text(names[k], outward(p, 34 + w / 2 * Math.abs(dx / l)), C.ink2, 'center', 0, 4);
+    }
+    ctx.font = '11px system-ui, -apple-system, "Segoe UI", "Malgun Gothic", sans-serif';
+
+    // Lexicon cloud, painted far-to-near.
+    const used = new Map();
+    for (const r of ROWS) { const t = termOf(r); if (t) used.set(t, (used.get(t) || 0) + 1); }
+    const q = this.q.value.trim().toLowerCase();
+    const showLex = this.showLex ? this.showLex.checked : true, showLabels = this.showLabels.checked;
+    this.hitLex = [];
+    let inside = 0;
+    const labels = [];
+    if (LEX) {
+      const pts = [];
+      for (const it of LEX) {
+        const n = this.norm(it.p); if (!this.inBox(n)) continue;
+        inside++;
+        const isUsed = used.has(it), isQ = q && it.term.toLowerCase().includes(q);
+        if (!showLex && !isUsed && !isQ) continue;
+        pts.push({ it, pr: this.projN(n), isUsed, isQ });
+      }
+      pts.sort((a, b) => a.pr.z - b.pr.z);
+      for (const { it, pr, isUsed, isQ } of pts) {
+        const depth = clamp((pr.z + 1.8) / 3.6, 0, 1);
+        if (db) {
+          // Database: every term as a light dot; terms some query matched get a dark ring.
+          ctx.globalAlpha = 0.35 + 0.5 * depth;
+          ctx.fillStyle = C.db;
+          ctx.beginPath(); ctx.arc(pr.x, pr.y, 2.4 * pr.f, 0, Math.PI * 2); ctx.fill();
+          ctx.globalAlpha = 1;
+          if (isUsed) {
+            ctx.strokeStyle = C.q; ctx.lineWidth = 1.5;
+            ctx.beginPath(); ctx.arc(pr.x, pr.y, 5.5 * pr.f, 0, Math.PI * 2); ctx.stroke();
+            if (showLabels) labels.push({ s: `${it.term} (${used.get(it)})`, p: pr, strong: false });
+          }
+          if (isQ || it === this.lexHover) {
+            ctx.fillStyle = C.ink2;
+            ctx.beginPath(); ctx.arc(pr.x, pr.y, 4 * pr.f, 0, Math.PI * 2); ctx.fill();
+            labels.push({ s: it.term, p: pr, strong: it === this.lexHover });
+          }
+        } else if (isUsed || isQ || it === this.lexHover) {
+          ctx.globalAlpha = 1;
+          ctx.fillStyle = isUsed ? C.used : C.ink2; ctx.strokeStyle = C.surface; ctx.lineWidth = 2;
+          ctx.beginPath(); ctx.arc(pr.x, pr.y, 4.5 * pr.f, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+          if (showLabels || it === this.lexHover) labels.push({ s: isUsed ? `${it.term} (${used.get(it)})` : it.term, p: pr, strong: it === this.lexHover });
+        } else {
+          ctx.globalAlpha = 0.18 + 0.4 * depth;
+          ctx.fillStyle = C.muted;
+          ctx.beginPath(); ctx.arc(pr.x, pr.y, 1.8 * pr.f, 0, Math.PI * 2); ctx.fill();
+        }
+        this.hitLex.push({ x: pr.x, y: pr.y, it });
+      }
+      ctx.globalAlpha = 1;
+    }
+
+    // State trajectory over turns.
+    const traj = ROWS.map(r => ({ r, p: statePt(r) })).filter(x => x.p);
+    const n = traj.length;
+    const proj = traj.map(x => ({ ...x, pr: this.proj(x.p) }));
+    // Queries in the db view are plain dark points (no path), so they read against the light cloud.
+    const col = i => db ? C.q : mixHex(C.old, C.neu, n > 1 ? i / (n - 1) : 1);
+    if (!db) for (let i = 1; i < n; i++) line(proj[i - 1].pr, proj[i].pr, col(i), 2);
+    this.hitState = [];
+    proj.forEach(({ r, pr }, i) => {
+      ctx.fillStyle = col(i); ctx.strokeStyle = C.surface; ctx.lineWidth = db ? 1.5 : 2;
+      ctx.beginPath(); ctx.arc(pr.x, pr.y, (db ? 3.5 : 4) * pr.f, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+      this.hitState.push({ x: pr.x, y: pr.y, row: r });
+    });
+    if (n && !db) labels.push({ s: `Turn ${proj[n - 1].r._i} (latest)`, p: proj[n - 1].pr, strong: false });
+
+    // Selected / hovered turn: ring plus a link to the term it was matched to.
+    for (const [r, color] of [[st.sel, C.sel], [st.hover, C.ink]]) {
+      if (!r) continue;
+      const p = statePt(r); if (!p) continue;
+      const pr = this.proj(p);
+      const t = termOf(r);
+      if (t) {
+        const tp = this.proj(t.p);
+        line(pr, tp, color, 1);
+        ctx.fillStyle = C.used; ctx.strokeStyle = color; ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.arc(tp.x, tp.y, 6, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+        labels.push({ s: t.term, p: tp, strong: true });
+      }
+      ctx.strokeStyle = color; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.arc(pr.x, pr.y, 8, 0, Math.PI * 2); ctx.stroke();
+      text(`Turn ${r._i}`, pr, C.ink, 'left', 11, 4);
+    }
+
+    // Labels last so they sit above every mark; skip ones that would overlap a placed label.
+    const placed = [];
+    labels.sort((a, b) => (b.strong ? 1 : 0) - (a.strong ? 1 : 0));
+    for (const l of labels) {
+      ctx.font = (l.strong ? '600 12px' : '11px') + ' system-ui, -apple-system, "Segoe UI", "Malgun Gothic", sans-serif';
+      const w = ctx.measureText(l.s).width, x = l.p.x + 8, y = l.p.y - 6;
+      if (placed.some(b => x < b.x + b.w && x + w > b.x && Math.abs(y - b.y) < 13)) continue;
+      placed.push({ x, y, w });
+      ctx.fillStyle = C.surface; ctx.globalAlpha = 0.8; ctx.fillRect(x - 2, y - 11, w + 4, 14); ctx.globalAlpha = 1;
+      text(l.s, { x, y }, l.strong ? C.ink : C.ink2);
+    }
+
+    this.subEl.textContent = !LEX
+      ? (db ? 'Open VAD.json to show the full lexicon distribution here.' : `Trajectory of ${n} turns. Open VAD.json too to show the emotion term distribution.`)
+      : db
+        ? `Database: ${LEX.length.toLocaleString()} VAD lexicon terms (faint dots) · Queries: VAD state of ${n} turns (bold dots) · ${used.size} lexicon terms matched by queries`
+        : `${inside.toLocaleString()} of ${LEX.length.toLocaleString()} lexicon terms are in the current range. ${used.size} emotion terms in this data · ${n} turns of state.`;
+  }
+  pick(e) {
+    const b = this.canvas.getBoundingClientRect(), px = e.clientX - b.left, py = e.clientY - b.top;
+    let best = null, bd = 14 * 14;
+    for (const hpt of this.hitState) { const d = (hpt.x - px) ** 2 + (hpt.y - py) ** 2; if (d < bd) { bd = d; best = { row: hpt.row }; } }
+    if (best) return best;
+    bd = 9 * 9;
+    for (const hpt of this.hitLex) { const d = (hpt.x - px) ** 2 + (hpt.y - py) ** 2; if (d < bd) { bd = d; best = { lex: hpt.it }; } }
+    return best;
+  }
+  hoverAt(e) {
+    const hit = this.pick(e);
+    if (hit && hit.row) { this.lexHover = null; setHover(hit.row, e); return; }
+    const lx = hit ? hit.lex : null;
+    if (st.hover) setHover(null);
+    if (lx !== this.lexHover) { this.lexHover = lx; this.draw(); }
+    if (lx) showLexTip(lx, e); else tip.style.display = 'none';
+  }
+  updateHover() { this.draw(); }
+}
+function showLexTip(it, e) {
+  const n = ROWS.filter(r => r.raw.emotion_term === it.term).length;
+  tip.replaceChildren(
+    h('div', { class: 'h', text: it.term }),
+    h('div', { class: 'm', text: n ? `Matched in ${n} turns of this data` : 'Lexicon term' }),
+    ...[['V', S.V], ['A', S.A], ['D', S.D]].map(([k, s], i) =>
+      h('div', { class: 'r' }, h('i', { style: `background:var(${s.color})` }), h('b', { text: fmtV(it.p[i]) }), h('span', { text: s.label }))),
+  );
+  placeTip(e);
+}
+
+// ---------- hover / select ----------
+const tip = $('#tip');
+function setHover(r, e) {
+  st.hover = r || null;
+  for (const c of charts) c.updateHover();
+  for (const c of cubes) c.updateHover();
+  document.querySelectorAll('#turns tr.hov').forEach(t => t.classList.remove('hov'));
+  if (r && r._tr) r._tr.classList.add('hov');
+  if (!r) { tip.style.display = 'none'; return; }
+  const t = termOf(r), p = statePt(r);
+  tip.replaceChildren(
+    h('div', { class: 'h', text: `Turn ${r._i} · ${fmtDate(r._t)}` }),
+    h('div', { class: 'm', text: [userOf(r), r.raw.emotion_term].filter(Boolean).join(' · ') }),
+    ...TIP_SERIES.filter(s => r[s.key] !== undefined).map(s =>
+      h('div', { class: 'r' }, h('i', { style: `background:var(${s.color})` }), h('b', { text: fmtV(r[s.key]) }), h('span', { text: s.label }))),
+    t && p ? h('div', { class: 'q', text: `Lexicon '${t.term}' (${t.p.map(fmtV).join(', ')}) · distance ${fmtV(dist3(p, t.p))}` }) : null,
+    r.raw.user_text ? h('div', { class: 'q', text: '“' + truncate(r.raw.user_text, 90) + '”' }) : null,
+  );
+  placeTip(e);
+}
+function placeTip(e) {
+  tip.style.display = 'block';
+  let x, y;
+  if (e && e.clientX != null) { x = e.clientX + 14; y = e.clientY + 14; }
+  else { const b = (e && e.target ? e.target : document.body).getBoundingClientRect(); x = b.left + 12; y = b.bottom + 6; }
+  const tw = tip.offsetWidth, th = tip.offsetHeight;
+  if (x + tw > innerWidth - 8) x = Math.max(8, x - tw - 28);
+  if (y + th > innerHeight - 8) y = Math.max(8, y - th - 28);
+  tip.style.left = x + 'px'; tip.style.top = y + 'px';
+}
+const truncate = (s, n) => s.length > n ? s.slice(0, n - 1) + '…' : s;
+function keyNav(e) {
+  if (!ROWS.length) return;
+  const cur = st.hover || st.sel;
+  let i = cur ? ROWS.indexOf(cur) : -1;
+  if (e.key === 'ArrowRight') i = Math.min(ROWS.length - 1, i + 1);
+  else if (e.key === 'ArrowLeft') i = i < 0 ? ROWS.length - 1 : Math.max(0, i - 1);
+  else if (e.key === 'Enter' && cur) { select(cur); return; }
+  else if (e.key === 'Escape') { setHover(null); return; }
+  else return;
+  e.preventDefault();
+  setHover(ROWS[i], { target: e.currentTarget });
+}
+function select(r) {
+  if (!r) return;
+  st.sel = r;
+  renderCharts();
+  document.querySelectorAll('#turns tr.sel').forEach(t => t.classList.remove('sel'));
+  if (r._tr) { r._tr.classList.add('sel'); }
+  renderDrawer();
+}
+function closeDrawer() {
+  st.sel = null;
+  $('#drawer').classList.remove('open'); $('#drawer').setAttribute('aria-hidden', 'true');
+  document.querySelectorAll('#turns tr.sel').forEach(t => t.classList.remove('sel'));
+  renderCharts();
+}
+function step(d) {
+  if (!st.sel) return;
+  const i = ROWS.indexOf(st.sel) + d;
+  if (i >= 0 && i < ROWS.length) { select(ROWS[i]); if (ROWS[i]._tr) ROWS[i]._tr.scrollIntoView({ block: 'nearest' }); }
+}
+function renderDrawer() {
+  const r = st.sel; if (!r) return;
+  $('#dtitle').textContent = `Turn ${r._i} / ${ROWS.length}`;
+  const prev = ROWS[ROWS.indexOf(r) - 1];
+  const kv = h('div', { class: 'kv' });
+  for (const c of NUMCOLS) kv.append(h('span', { text: c }), h('span', { text: fmtV(r[c]) }));
+  if (r.raw['front.expression'] !== undefined) kv.append(h('span', { text: 'front.expression' }), h('span', { text: r.raw['front.expression'] }));
+  $('#dbody').replaceChildren(
+    h('div', { class: 'meta', text: [fmtFull(r._t), userOf(r), r.raw.persona, r.raw.session && 'session ' + r.raw.session.slice(0, 6),
+      prev && prev._t && r._t ? fmtDur(r._t - prev._t) + ' after previous turn' : null].filter(Boolean).join(' · ') }),
+    h('div', null, h('span', { class: 'key' }, 'Emotion term ', h('b', { text: r.raw.emotion_terms || r.raw.emotion_term || '—' }))),
+    termOf(r) && statePt(r) ? h('div', { class: 'hint', text: `Lexicon position V/A/D = ${termOf(r).p.map(fmtV).join(', ')} · distance from state ${fmtV(dist3(statePt(r), termOf(r).p))}` }) : null,
+    r.raw.user_text !== undefined ? h('h3', { text: 'User message' }) : null,
+    r.raw.user_text !== undefined ? h('div', { class: 'msg', text: r.raw.user_text || '(empty)' }) : null,
+    r.raw.persona_text !== undefined ? h('h3', { text: `Persona reply${r.raw.persona ? ' (' + r.raw.persona + ')' : ''}` }) : null,
+    r.raw.persona_text !== undefined ? h('div', { class: 'msg', text: r.raw.persona_text || '(empty)' }) : null,
+    h('h3', { text: 'All values' }), kv,
+  );
+  $('#drawer').classList.add('open'); $('#drawer').setAttribute('aria-hidden', 'false');
+}
+
+// ---------- sections ----------
+function renderTiles() {
+  const box = $('#tiles'); box.replaceChildren();
+  const tile = (k, v, d) => box.append(h('div', { class: 'tile' }, h('div', { class: 'k', text: k }), h('div', { class: 'v', text: v }), d ? h('div', { class: 'd', text: d }) : null));
+  const n = ROWS.length;
+  const users = new Set(ROWS.map(userOf).filter(Boolean));
+  const sessions = new Set(ROWS.map(r => r.raw.session).filter(Boolean));
+  tile('Turns', n.toLocaleString(), ALL.length !== n ? `of ${ALL.length.toLocaleString()} total` : null);
+  tile('Users', String(users.size), sessions.size ? `${sessions.size} sessions` : null);
+  const t0 = ROWS[0] && ROWS[0]._t, t1 = n && ROWS[n - 1]._t;
+  tile('Span', t0 && t1 ? fmtDur(t1 - t0) : '—', t0 ? `${fmtDate(t0)} → ${fmtDate(t1)}` : null);
+  let gap = 0, gi = null;
+  for (let i = 1; i < n; i++) if (ROWS[i]._t && ROWS[i - 1]._t && ROWS[i]._t - ROWS[i - 1]._t > gap) { gap = ROWS[i]._t - ROWS[i - 1]._t; gi = i; }
+  tile('Longest gap', gi ? fmtDur(gap) : '—', gi ? `Turn ${gi} → ${gi + 1} (for checking decay)` : null);
+  const terms = countTerms();
+  if (terms.length) tile('Top emotion term', terms[0][0], `${terms[0][1]} turns · ${Math.round(terms[0][1] / n * 100)}%`);
+}
+function countTerms() {
+  const m = new Map();
+  for (const r of ROWS) { const t = r.raw.emotion_term; if (t) m.set(t, (m.get(t) || 0) + 1); }
+  return [...m].sort((a, b) => b[1] - a[1]);
+}
+function renderTerms() {
+  const box = $('#terms'); box.replaceChildren();
+  const terms = countTerms(), max = terms.length ? terms[0][1] : 1;
+  $('#termsub').textContent = `${terms.length} distinct emotion terms` + (terms.length > 15 ? ' (top 15 shown)' : '');
+  for (const [t, c] of terms.slice(0, 15)) {
+    box.append(h('span', { class: 'lab', text: t }),
+      h('span', { class: 'track' }, h('span', { class: 'bar', style: `width:calc((100% - 70px) * ${c / max})` }),
+        h('span', { class: 'num', text: `${c} · ${Math.round(c / ROWS.length * 100)}%` })));
+  }
+}
+function renderConsts() {
+  const tbl = $('#consts'); tbl.replaceChildren();
+  const info = NUMCOLS.map(c => {
+    let lo = Infinity, hi = -Infinity; const u = new Set();
+    for (const r of ROWS) { const v = r[c]; if (v == null) continue; lo = Math.min(lo, v); hi = Math.max(hi, v); u.add(v); }
+    return { c, lo, hi, u: u.size, num: true };
+  });
+  if (COLS.includes('front.expression')) info.push({ c: 'front.expression', u: new Set(ROWS.map(r => r.raw['front.expression'])).size, num: false,
+    vals: [...new Set(ROWS.map(r => r.raw['front.expression']))].slice(0, 4).join(', ') });
+  info.sort((a, b) => (a.u <= 1 ? 0 : 1) - (b.u <= 1 ? 0 : 1));
+  const fixed = info.filter(i => i.u <= 1).length;
+  $('#constsub').textContent = ROWS.length > 1
+    ? `${fixed} of ${info.length} fields have the same value in every turn. They may not be computed or saved.`
+    : 'At least 2 turns are needed for this check.';
+  tbl.append(h('thead', null, h('tr', null, h('th', { text: 'Field' }), h('th', { class: 'num', text: 'Min' }),
+    h('th', { class: 'num', text: 'Max' }), h('th', { class: 'num', text: 'Distinct values' }), h('th', { text: 'Status' }))));
+  const tb = h('tbody');
+  for (const i of info) {
+    tb.append(h('tr', null, h('td', { text: i.c }),
+      h('td', { class: 'num', text: i.num ? fmtV(isFinite(i.lo) ? i.lo : null) : i.vals }),
+      h('td', { class: 'num', text: i.num ? fmtV(isFinite(i.hi) ? i.hi : null) : '' }),
+      h('td', { class: 'num', text: String(i.u) }),
+      h('td', null, i.u <= 1 && ROWS.length > 1 ? h('span', { class: 'badge', text: 'Constant' }) : h('span', { class: 'ok', text: 'Changes' }))));
+  }
+  tbl.append(tb);
+}
+function renderTurns() {
+  const tbl = $('#turns'); tbl.replaceChildren();
+  const cols = [['#', r => r._i, 'num'], ['Time', r => fmtDate(r._t)], ['User', userOf], ['Emotion term', r => r.raw.emotion_term || ''],
+    ['V', r => fmtV(r.V), 'num'], ['A', r => fmtV(r.A), 'num'], ['D', r => fmtV(r.D), 'num'], ['radius', r => fmtV(r.radius), 'num'],
+    ['reward', r => fmtV(r['instant.reward']), 'num'], ['stress', r => fmtV(r['instant.stress']), 'num'],
+    ['User message', r => truncate(r.raw.user_text || '', 80), 'txt']];
+  tbl.append(h('thead', null, h('tr', null, ...cols.map(([t, , c]) => h('th', { class: c === 'num' ? 'num' : '', text: t })))));
+  const tb = h('tbody');
+  for (const r of ROWS) {
+    const tr = h('tr', { onclick: () => select(r), onpointerenter: () => setHover(r), onpointerleave: () => setHover(null) },
+      ...cols.map(([, f, c]) => h('td', { class: c || '', text: String(f(r)) })));
+    if (r === st.sel) tr.classList.add('sel');
+    r._tr = tr; tb.append(tr);
+  }
+  tbl.append(tb);
+}
+function renderCube() { if (ROWS.length) for (const c of cubes) c.render(); }
+function renderCharts() {
+  for (const c of charts) c.render();
+  renderCube();
+}
+function renderAll() {
+  ALL.forEach(r => { r._tr = null; });
+  renderTiles(); renderCharts(); renderTerms(); renderConsts(); renderTurns();
+  if (st.sel) renderDrawer();
+}
+
+// ---------- setup ----------
+new LineChart($('#vad'), [S.V], 'Valence');
+new LineChart($('#vad'), [S.A], 'Arousal');
+new LineChart($('#vad'), [S.D], 'Dominance');
+new LineChart($('#vad'), [S.R], 'Radius (emotion intensity)');
+new LineChart($('#rs'), [S.rew, S.str], 'instant', 170);
+new LineChart($('#rs'), [S.cum], 'cumulative', 120);
+cubes.push(new Cube($('#cube'), 'traj', $('#cubesub')), new Cube($('#cube2'), 'db', $('#cube2sub')));
+
+let raf = 0, lastW = 0;
+new ResizeObserver(() => {
+  const w = $('main').clientWidth; if (w === lastW) return; lastW = w;
+  cancelAnimationFrame(raf); raf = requestAnimationFrame(() => { if (ROWS.length) renderCharts(); });
+}).observe($('main'));
+matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => { if (ROWS.length) renderCharts(); });
+$('#theme').addEventListener('click', () => {
+  const root = document.documentElement;
+  const dark = root.dataset.theme ? root.dataset.theme === 'dark' : matchMedia('(prefers-color-scheme: dark)').matches;
+  root.dataset.theme = dark ? 'light' : 'dark';
+  try { localStorage.setItem('emotion-viewer-theme', root.dataset.theme); } catch (e) {}
+  if (ROWS.length) renderCharts();
+});
+try { const t = localStorage.getItem('emotion-viewer-theme'); if (t) document.documentElement.dataset.theme = t; } catch (e) {}
+
+function readFile(file) {
+  if (!file) return;
+  const fr = new FileReader();
+  fr.onload = () => {
+    const text = String(fr.result).replace(/^﻿/, '');
+    if (/\.json$/i.test(file.name) || /^\s*[\[{]/.test(text)) {
+      try { loadLexicon(JSON.parse(text), file.name); } catch (e) { showError('Could not read the JSON: ' + e.message); }
+    } else load(text, file.name);
+  };
+  fr.onerror = () => showError('Could not read the file.');
+  fr.readAsText(file, 'utf-8');
+}
+const readFiles = files => [...files].forEach(readFile);
+$('#file').addEventListener('change', e => { readFiles(e.target.files); e.target.value = ''; });
+addEventListener('dragover', e => { e.preventDefault(); document.body.classList.add('drag'); });
+addEventListener('dragleave', e => { if (!e.relatedTarget) document.body.classList.remove('drag'); });
+addEventListener('drop', e => { e.preventDefault(); document.body.classList.remove('drag'); readFiles(e.dataTransfer.files); });
+$('#dclose').addEventListener('click', closeDrawer);
+$('#dprev').addEventListener('click', () => step(-1));
+$('#dnext').addEventListener('click', () => step(1));
+addEventListener('keydown', e => {
+  if (!$('#drawer').classList.contains('open')) return;
+  if (e.key === 'Escape') closeDrawer();
+  else if (e.target.closest && e.target.closest('.plot-host')) return;
+  else if (e.key === 'ArrowLeft') step(-1);
+  else if (e.key === 'ArrowRight') step(1);
+});
+
+if (window.EMBEDDED_VAD) loadLexicon(window.EMBEDDED_VAD, window.EMBEDDED_VAD_NAME);
+if (window.EMBEDDED_CSV) load(window.EMBEDDED_CSV, window.EMBEDDED_NAME);
+</script>
+</body>
+</html>

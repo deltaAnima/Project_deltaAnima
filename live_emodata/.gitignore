@@ -1,0 +1,5 @@
+.env
+*_view.html
+__pycache__/
+*.pyc
+*.json
