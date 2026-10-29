@@ -32,10 +32,13 @@ inline constexpr const char *kRedisPort = "8080";
 inline constexpr const char *kLlama5090Host = "127.0.0.1";
 inline constexpr const char *kLlama5090Port = "8080";
 
-// Where the OpenJev NLI classifier lives — Carmen's primary VAD
-// estimator, with the 5090 machine (kLlama5090Host) as its fallback.
-inline constexpr const char *kOpenJevHost = "127.0.0.1";
-inline constexpr const char *kOpenJevPort = "8080";
+// Where Laya Serve lives — Carmen's typed-decision VAD estimator (see
+// laya_client.hpp), with the 5090 machine (kLlama5090Host) as the other
+// option. Laya's bearer token, if it was started with LAYA_API_KEY, is
+// read from this server's own LAYA_API_KEY environment variable at
+// startup rather than living here.
+inline constexpr const char *kLayaHost = "127.0.0.1";
+inline constexpr const char *kLayaPort = "8080";
 
 // The port THIS server (orchestrator_server) listens on for the
 // /character/context endpoint that FuliHandler (the Python side) calls.

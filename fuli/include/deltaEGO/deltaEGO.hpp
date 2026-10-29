@@ -3,7 +3,7 @@
  *
  * Ayin and Carmen (defined in deltaEGO.cpp) hold all the actual engine
  * internals — Int16Tensor/AVX-512 search, emotionPhysics, VAD math for
- * Ayin; the future OpenJEV text->VAD pipeline for Carmen. They're only
+ * Ayin; the Laya/5090 text->VAD pipeline for Carmen. They're only
  * forward-declared here and held by pointer so that consumers of this
  * header do not need to see or link against json/yaml-cpp/AVX intrinsics
  * directly — deltaEGO owns them directly, there is no intermediate Impl
@@ -181,14 +181,14 @@ namespace deltaEGO {
     // config_path: path to the YAML file with OCEAN/physics weights.
     // def_V/def_A/def_D/def_radius: default (resting) VAD state.
     // ioc: THE server's single io_context (see main.cpp) — forwarded to
-    // Carmen, which needs it for its network clients (OpenJEV, the 5090
-    // fallback). Not owned; must outlive this deltaEGO instance.
-    // host_jev/port_jev/host_5090/port_5090: where those two backends
-    // live — see config::kLlama5090Host/Port for the 5090 side.
+    // Carmen, which needs it for its network clients (Laya, the 5090
+    // SGLang model). Not owned; must outlive this deltaEGO instance.
+    // host_laya/port_laya/laya_api_key/host_5090/port_5090: where those
+    // two backends live — see config::kLaya*/kLlama5090* in constants.hpp.
     deltaEGO(boost::asio::io_context &ioc,
               const std::string &config_path,
               float def_V, float def_A, float def_D, float def_radius,
-              std::string host_jev, std::string port_jev,
+              std::string host_laya, std::string port_laya, std::string laya_api_key,
               std::string host_5090, std::string port_5090);
     ~deltaEGO();
 
@@ -207,8 +207,9 @@ namespace deltaEGO {
     // (Orchestrator passes scope_key, so each channel has its own).
     // emotion_policy: the request's config.emotion_policy. Its OCEAN/
     // weight sections override the YAML for this call only; its backend
-    // flags (use_openjev, use_5090, fallback_to_5090, fallback_to_openjev)
-    // pick the VAD estimator. Absent flags mean the 5090/SGLang path
+    // flags (use_laya, use_5090, fallback_to_5090, fallback_to_laya —
+    // use_openjev/fallback_to_openjev still accepted as aliases) pick the
+    // VAD estimator. Absent flags mean the 5090/SGLang path
     // alone, same as before emotion_policy was honored.
     // Returns an awaitable, not a plain std::string, because
     // whisper_from_Carmen is itself a coroutine (it calls out over the
@@ -240,7 +241,7 @@ namespace deltaEGO {
 
   private:
     std::unique_ptr<Ayin::Ayin> ayin_;
-    std::unique_ptr<Carmen::Carmen> carmen_; // unused until OpenJEV integration lands
+    std::unique_ptr<Carmen::Carmen> carmen_; // text -> VAD for sephirothic_tree
   };
 
 } // namespace deltaEGO

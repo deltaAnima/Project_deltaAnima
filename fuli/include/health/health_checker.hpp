@@ -5,7 +5,7 @@
 #include "Third_Party/json.hpp"
 #include "clients/embedding_client.hpp"
 #include "clients/redis_db_client.hpp"
-#include "clients/openjev_client.hpp"
+#include "clients/laya_client.hpp"
 #include "deltaEGO/deltaEGO.hpp"
 // As more clients get their own HealthCheck(), #include each one here
 // and add a const-reference member below, same as embedding_client_.
@@ -13,7 +13,7 @@
 // forwards specifically to Carmen's Gebura_5090 (the 5090 SGLang
 // fallback VAD estimator), since that client has no standalone instance
 // of its own in main.cpp to point at directly (see Carmen.hpp's comment
-// on Check5090Health for why openjev_client_ below doesn't need the same
+// on Check5090Health for why laya_client_ below doesn't need the same
 // treatment).
 
 namespace health {
@@ -31,7 +31,7 @@ public:
   // HealthChecker is used, same lifetime rule as Orchestrator.
   HealthChecker(const clients::EmbeddingClient &embedding_client,
                 const clients::RedisDbClient &redis_client,
-                const clients::OpenJevClient &openjev_client,
+                const clients::LayaClient &laya_client,
                 const deltaEGO::deltaEGO &emotion_engine);
 
   // Runs every registered client's HealthCheck() and returns one combined
@@ -65,7 +65,7 @@ public:
 private:
   const clients::EmbeddingClient &embedding_client_;
   const clients::RedisDbClient &redis_client_;
-  const clients::OpenJevClient &openjev_client_;
+  const clients::LayaClient &laya_client_;
   const deltaEGO::deltaEGO &emotion_engine_;
 };
 
