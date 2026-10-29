@@ -1,6 +1,3 @@
-
-
-
 # deltaAnima
 
 **deltaAnima** is a real-time, self-hosted backend for **Reminh**, an AI character that remembers past conversations and has a continuously evolving emotional state.
@@ -92,7 +89,7 @@ flowchart LR
         C["Character<br/>(Reminh)"]
     end
 
-    VL["VL model<br/>SGLang server<br/>/v1/chat/completions"]
+    VL["VL model<br/>Strata (Qwen3.8-Flash-Next)<br/>/v1/chat/completions"]
 
     subgraph Fuli["Fuli (C++)"]
         F["HTTP server<br/>/character/*"]
@@ -102,7 +99,7 @@ flowchart LR
 
     R[("Redis<br/>memory metadata")]
     TEI["TEI bge-m3<br/>embedding server"]
-    L5090["5090 SGLang<br/>(VAD estimation)"]
+    L5090["5090 Strata<br/>(VAD estimation)"]
     LAYA["Laya Serve<br/>(VAD estimation)"]
 
     U <-- "WS: text/binary" --> H
@@ -126,7 +123,7 @@ flowchart LR
 - **Hub-and-spoke**: the Client, Orchestrator, TTS (and optionally STT) never connect to each other directly. They all connect to `delta-edge` over WebSocket. Each connection first registers its **role**, and every message after that is routed statically by the `(sender role, message type)` pair.
 - **Orchestrator ↔ Fuli is HTTP/JSON**: two calls per turn. One *before* inference to fetch memories and emotion (`/character/context`), and one *after* inference to store what the character actually said (`/character/context_memory`).
 - **Heavy work lives in Fuli**: embedding, vector search, and emotion computation all happen on the C++ side. The Python side is a thin, stateless layer that only keeps per-character policy (RAG settings, OCEAN personality values) in YAML and sends it along with each request.
-- **GPU-bound work is serialized on purpose**: the VL model runs as a single instance on a single GPU, so the Orchestrator processes jobs with one worker to avoid contention and out-of-memory failures. Unity (over the edge) and Discord (over HTTP) share that one queue.
+- **GPU-bound work is serialized on purpose**: the VL model runs as a single Strata instance on a single GPU, so the Orchestrator processes jobs with one worker to avoid contention and out-of-memory failures. Unity (over the edge) and Discord (over HTTP) share that one queue.
 - **Who and where, not just who**: every turn carries a `user_key` (who is talking) and a `scope_key` (where: a Unity scene, a Discord channel, a DM). Fuli uses the pair to separate memories, sessions, and moods, so Reminh can feel differently in different channels and never leaks a DM into a group chat (see [6.3](#63-identity-user_key-and-scope_key)).
 
 ---
@@ -150,6 +147,8 @@ deltaAnima runs on a small self-hosted cluster rather than a single machine:
 |---|---|---|---|
 | TTS real-time factor (RTX 3090) | > 1.0 (slower than real time) | ≈ 0.4 | Moved the node from Windows 11 + WSL2 to native Ubuntu 24.04; WSL2's WDDM overhead was the root cause (~3× throughput) |
 | Emotion (VAD) inference latency | ~170 ms (VL model on RTX 5090) | ~30 ms (OpenJEV on RTX 3090, experimental) | Early port of emotion scoring to a small dedicated classifier. Fast, but output quality was not stable enough; this path has since been replaced by Laya (see [8.1](#81-carmen--extracting-a-stimulus-from-text)) |
+
+<!-- TODO (Justin): the numbers above and below were measured before the switch from SGLang to Strata. Re-measure, or label them as pre-Strata. -->
 
 ### End-to-end voice latency
 
@@ -179,7 +178,7 @@ sequenceDiagram
     participant S as STT (HTTP)
     participant O as Orchestrator
     participant F as Fuli
-    participant V as VL model
+    participant V as VL model (Strata)
     participant T as TTS
 
     U->>E: {"type":"audio_start"}
@@ -309,7 +308,7 @@ flowchart TB
         FH["FuliHandler<br/>HTTP → Fuli"]
     end
 
-    VLH["VisionLangHandler<br/>HTTP → VL model"]
+    VLH["VisionLangHandler<br/>HTTP → Strata"]
 
     EC --> M --> Q --> W
     HTTP --> Q
@@ -329,9 +328,9 @@ flowchart TB
 | File | Description |
 |---|---|
 | [`server.py`](orchestrator/server.py) | Entry point. Initializes handlers, connects to the edge, turns edge messages and Discord HTTP requests into `InferenceJob`s, hosts the FastAPI app |
-| [`orchestrator.py`](orchestrator/orchestrator.py) | Job queue with a **single worker**. The VL model is one instance on one GPU, so jobs run strictly one at a time to avoid contention and OOM. Edge jobs are answered over the edge; Discord jobs are answered through a future the HTTP handler is awaiting |
+| [`orchestrator.py`](orchestrator/orchestrator.py) | Job queue with a **single worker**. The VL model is one Strata instance on one GPU, so jobs run strictly one at a time to avoid contention and OOM. Edge jobs are answered over the edge; Discord jobs are answered through a future the HTTP handler is awaiting |
 | [`edge_client.py`](orchestrator/edge_client.py) | WebSocket client for the edge hub (`register` → listen loop, `send_routed`). Reconnects with backoff and re-registers when the hub drops the link |
-| [`VisionLangHandler.py`](orchestrator/VisionLangHandler.py) | Client for an SGLang server (OpenAI-compatible API). Checks the model is loaded and can read images via `/get_model_info`, runs inference via `/v1/chat/completions` with optional thinking mode, replayed history, and one image per turn |
+| [`VisionLangHandler.py`](orchestrator/VisionLangHandler.py) | Client for a [Strata](https://github.com/Niko1221/Strata) server running Qwen3.8-Flash-Next (OpenAI-compatible API). Runs inference via `/v1/chat/completions` with optional reasoning, replayed history, and one image per turn <!-- TODO (Justin): SGLang's /get_model_info startup check doesn't exist on Strata. Describe what the handler checks now (e.g. GET /v1/models). --> |
 | [`tui.py`](orchestrator/tui.py) | Optional terminal dashboard (`python server.py --tui`): queue and in-flight job, downstream server status, live log, reload hotkeys, and a verbose view (`v` key / `-v`) with prompts, Fuli hits, token usage, and latency |
 | [`config.py`](orchestrator/config.py) / [`config.yaml`](orchestrator/config.yaml) | Loader for every environment-specific value (IPs, ports, model). Runs a TCP-level liveness sweep at startup (`test_servers`) |
 | [`Persona/Character.py`](orchestrator/Persona/Character.py) | One character = prompt + RAG policy + emotion policy + VL handler. Picks the prompt template by platform and turns Fuli's recent turns into chat history |
@@ -419,7 +418,7 @@ flowchart TB
         EMB["EmbeddingClient → TEI /embed"]
         RD["RedisDbClient (boost::redis)"]
         OJ["LayaClient → /v1/systemone"]
-        LL["Llama5090Client → SGLang /v1/chat/completions"]
+        LL["Llama5090Client → Strata /v1/chat/completions"]
     end
     GFE["GpuFaissEngine<br/>GpuIndexFlatL2 + dedicated worker thread"]
     EGO["deltaEGO"]
@@ -506,7 +505,7 @@ flowchart LR
     subgraph CA["Carmen — text → VAD stimulus"]
         direction TB
         OJV["Laya<br/>pick one of 7 labeled levels per axis → -1..1<br/>(use_laya, configured default)"]
-        G5["Gebura_5090<br/>ask the LLM how Reminh would feel<br/>(use_5090 / fallback)"]
+        G5["Gebura_5090<br/>ask the LLM on Strata how Reminh would feel<br/>(use_5090 / fallback)"]
     end
 
     CA -- "stimulus (v,a,d)" --> AY
@@ -526,8 +525,7 @@ flowchart LR
 Both backends estimate **the character's reaction**, not the speaker's emotion: the question is always how *Reminh herself* would feel on hearing the message. Which one runs is chosen per request by the `emotion_policy` flags the Orchestrator sends (`emotion_inference` in `config.yaml`).
 
 - **Laya path (configured default)**: sends the message to Laya Serve (`POST /v1/systemone`) in a single request with one question per axis, each offering seven labeled levels from "very negative" to "very positive", each anchored by examples ("neutral (ordinary question, greeting, small talk)"). Laya's expected level index is mapped onto -1..1. It answers in tens of milliseconds on a GPU. A bearer token is read from the `LAYA_API_KEY` environment variable if Laya requires one.
-- **5090 path (fallback)**: asks the SGLang server on the 5090 GPU machine, with a persona prompt (same idea as [`VAD_inference_prompt.yaml`](orchestrator/Persona/Config/Common/VAD_inference_prompt.yaml)), for VAD JSON. SGLang's schema-constrained output guarantees the reply parses. Used when `use_5090` is set, or when Laya fails and `fallback_to_5090` is on.
-
+- **5090 path (fallback)**: asks the Strata server (Qwen3.8-Flash-Next) on the 5090 GPU machine, with a persona prompt (same idea as [`VAD_inference_prompt.yaml`](orchestrator/Persona/Config/Common/VAD_inference_prompt.yaml)), for VAD JSON. Used when `use_5090` is set, or when Laya fails and `fallback_to_5090` is on. <!-- TODO (Justin): SGLang guaranteed parseable JSON through schema-constrained output. Confirm whether Strata does the same (response_format / json_schema), or describe how Fuli handles a malformed reply. -->
 
 ### 8.2 Roland — personality-driven emotion physics
 
@@ -593,17 +591,18 @@ OCEAN:
 | Redis | Memory metadata and recent-turn lists | Fuli |
 | [TEI](https://github.com/huggingface/text-embeddings-inference) + `bge-m3` | 1024-dim embeddings (`/embed`) | Fuli |
 | Laya Serve | VAD estimation (configured default) | Fuli (deltaEGO) |
-| [SGLang](https://github.com/sgl-project/sglang) server (5090) | VAD estimation (fallback) | Fuli (deltaEGO) |
-| SGLang server with a vision-language model | Character response generation | Orchestrator |
+| [Strata](https://github.com/Niko1221/Strata) + Qwen3.8-Flash-Next (5090) | Character response generation (with image input enabled), and VAD estimation (fallback) | Orchestrator, Fuli (deltaEGO) |
 | STT server | Speech recognition (HTTP or WS) | delta-edge |
 | TTS server | Speech synthesis (connects to the edge as role `tts`) | delta-edge |
 | NRC-VAD lexicon | Emotion term lookup (`VAD.json`, not included) | Fuli (deltaEGO) |
+
+> Strata listens on localhost only by default. Because the Orchestrator and Fuli reach it from other machines, it must be started with an explicit host setting and an API key. <!-- TODO (Justin): document where the Orchestrator and Fuli read that key from (.env variable name). -->
 
 ### 9.2 Recommended startup order
 
 ```mermaid
 flowchart LR
-    A["Redis / TEI / Laya / SGLang"] --> B["Fuli"]
+    A["Redis / TEI / Laya / Strata"] --> B["Fuli"]
     B --> C["delta-edge"]
     C --> D["Orchestrator"]
     C --> E["TTS · (STT)"]
@@ -708,14 +707,14 @@ python server.py            # http://127.0.0.1:<SERVER_PORT>
 | `edge.url` | Edge hub WS URL (the `EDGE_SERVER_URL` env var takes precedence) |
 | `edge.role` | Role to register as (`orchestrator`) |
 | `servers.*_server_ip` | `host:port` of each microservice. Leave blank to skip it in the liveness sweep |
-| `vl_model.address`, `vl_model.port` | SGLang server address |
-| `vl_model.alias` | Must match SGLang's `--served-model-name` |
-| `vl_model.model_full` | Matched against the server's `model_path` to confirm the right model is loaded |
-| `vl_model.temperature`, `max_token`, `top_p` | Sampling settings (`max_token` covers thinking + answer) |
-| `vl_model.enable_thinking` | Thinking mode on/off; remove the key to use the server default. Off keeps voice replies fast |
+| `vl_model.address`, `vl_model.port` | Strata server address |
+| `vl_model.alias` | Model name sent in each request; must match the name Strata serves |
+| `vl_model.model_full` | Full model identifier (Qwen3.8-Flash-Next), used to confirm the right model is loaded |
+| `vl_model.temperature`, `max_token`, `top_p` | Sampling settings (`max_token` covers reasoning + answer) |
+| `vl_model.enable_thinking` | Reasoning on/off; remove the key to use the server default. Off keeps voice replies fast <!-- TODO (Justin): Strata uses a reasoning-effort level (off/low/medium/high). Update this key if the handler now sends a level instead of a bool. --> |
 | `vl_model.timeout` | Seconds to wait for one completion |
 | `emotion_inference.backend` | `laya` \| `5090` |
-| `emotion_inference.fallback_to_5090` | Retry on 5090 if Laya fails |
+| `emotion_inference.fallback_to_5090` | Retry on the 5090 Strata server if Laya fails |
 
 - To use a different config file: `ORCHESTRATOR_CONFIG=/path/to/config.yaml`
 - Secrets such as API keys belong in `.env`, not `config.yaml` (`.env` is gitignored).
@@ -729,7 +728,7 @@ At the MVP stage these are **compile-time constants**; changing them requires a 
 | `kListenPort` | Fuli HTTP port |
 | `kEmbeddingHost/Port` | TEI address |
 | `kRedisHost/Port` | Redis address |
-| `kLlama5090Host/Port` | SGLang address for fallback VAD estimation |
+| `kLlama5090Host/Port` | Strata address for fallback VAD estimation |
 | `kLayaHost/Port` | Laya Serve address |
 | `kEmbeddingDim` | Embedding dimension (bge-m3 = 1024; must match the model) |
 | `kStaleBufferSeconds` | How long an unsaved turn buffer blocks its conversation before it can be taken over (300 s) |
@@ -806,4 +805,4 @@ The first prototype (docs, edge, orchestrator, and an earlier Python-wrapped del
 
 - **NRC-VAD Lexicon** — deltaEGO's emotion-term lookup uses the NRC Valence, Arousal, and Dominance Lexicon. Its license does not permit redistribution, so `VAD.json` is **not included** in this repository. To run deltaEGO, obtain the lexicon from its authors under their terms, convert it to the expected JSON format, and place it at `fuli/include/VAD_DB/VAD.json`. The live_emodata viewer can optionally use the same file (copy it into `live_emodata/`).
   <!-- TODO (Justin): link the conversion script if it is included, and describe what happens when the file is missing. -->
-- **bge-m3**, **Faiss**, **SGLang**, **TEI**, and other dependencies are used under their respective licenses.
+- **Strata** (MIT), **Qwen3.8-Flash-Next** (model weights under their own license), **bge-m3**, **Faiss**, **TEI**, and other dependencies are used under their respective licenses.
