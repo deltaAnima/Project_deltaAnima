@@ -1,4 +1,4 @@
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from pathlib import Path
 
 from VisionLangHandler import VisionLangHandler
@@ -6,7 +6,7 @@ from Persona.PromptHandler import PromptHandler
 from Persona.RAGHandler import Remembrance
 from Persona.EmotionHandler import Enigmata
 from Persona.FuliHandler import FuliHandler
-from Persona.RAG_schemas import ContextSaveResponse
+from Persona.RAG_schemas import ContextSaveResponse, RecentTurn
 import config
 
 
@@ -53,11 +53,13 @@ class Character:
                                    user_name:str,
                                    user_input:str,
                                    context:Optional[str]=None,
-                                   platform:Optional[str]=None) -> str:
+                                   platform:Optional[str]=None) -> Tuple[str, List[Dict[str, str]]]:
         """
-        Returns the character's prompt with the user's input and context filled in.
-        Fetches memories + mood from Fuli in one round trip, then fills them
-        into the Discord-text prompt template.
+        Returns (system prompt, history): the character's prompt with the
+        user's input and context filled in, plus Fuli's recent turns as
+        OpenAI-style user/assistant messages for the VL call to replay
+        before the current input. Fetches memories + mood + recent turns
+        from Fuli in one round trip.
 
         `user_key` ("<platform>:<platform_user_id>") identifies the user,
         `scope_key` identifies where they're talking (e.g. a Discord channel);
@@ -72,11 +74,26 @@ class Character:
             if platform == "discord"
             else self.prompt_handler.get_reminh_prompt
         )
-        return build_prompt(
+        system_prompt = build_prompt(
             user_name=user_name,
             memories=fuli_result["memories"],
             mood=fuli_result["emotion"] or ["calm"],
         )
+        return system_prompt, self.__history_messages__(fuli_result["recent_turns"], user_key)
+
+    @staticmethod
+    def __history_messages__(recent_turns: List[RecentTurn], user_key: str) -> List[Dict[str, str]]:
+        """
+        Fuli's recent turns (oldest first) as alternating user/assistant
+        messages. Turns from someone other than the current user (a shared
+        channel) get their name prefixed so the model can tell speakers apart.
+        """
+        messages: List[Dict[str, str]] = []
+        for turn in recent_turns:
+            user_text = turn.user_input if turn.user_key == user_key else f"{turn.user_name}: {turn.user_input}"
+            messages.append({"role": "user", "content": user_text})
+            messages.append({"role": "assistant", "content": turn.model_response})
+        return messages
 
     def __call_Fuli__(self, user_input:str,
                           user_key:str,
@@ -87,7 +104,7 @@ class Character:
         Single round trip to Fuli: sends the raw user_key/scope_key/user_name/
         user_input/context plus this character's RAG/emotion policy — Fuli
         handles embedding, RAG search, and emotion computation itself.
-        Returns {"memories": str, "emotion": ...}.
+        Returns {"memories": str, "recent_turns": [RecentTurn], "emotion": ...}.
         """
         return self.Emanator.query_character_context(
             user_key=user_key,
