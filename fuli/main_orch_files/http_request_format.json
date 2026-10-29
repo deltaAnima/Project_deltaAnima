@@ -89,7 +89,7 @@
         "expression_r": 0.4,
         "epsilon": 1e-09
       },
-      "use_openjev": true,
+      "use_laya": true,
       "use_5090": false,
       "fallback_to_5090": true
     }

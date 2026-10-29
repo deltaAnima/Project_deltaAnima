@@ -72,7 +72,7 @@ struct FuliContextRequest {
   RAGQueryOrder rag_policy; // parsed from config.rag_policy
 
   // config.emotion_policy (OCEAN traits, physics weights, backend flags
-  // like use_openjev/use_5090), kept as raw JSON — deltaEGO reads it
+  // like use_laya/use_5090), kept as raw JSON — deltaEGO reads it
   // directly (see deltaEGO::sephirothic_tree): weight sections override
   // config/deltaEGO_default.yaml for this turn, flags pick the VAD
   // backend.

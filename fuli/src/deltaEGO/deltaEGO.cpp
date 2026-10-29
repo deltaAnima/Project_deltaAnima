@@ -4,7 +4,7 @@
  * The actual engine internals live in their own translation units:
  *   Ayin.cpp   — VAD finding-and-processing (Roland: analysis,
  *                Angela: AVX-512 vector search)
- *   Carmen.cpp — future OpenJEV text->VAD integration (scaffold only)
+ *   Carmen.cpp — text->VAD via Laya or the 5090 SGLang model
  *
  * This file just owns one of each (via Ayin.hpp/Carmen.hpp) and
  * delegates — plus the shared structs::/func:: implementations declared
@@ -119,10 +119,11 @@ double sigmoid(double x)
 deltaEGO::deltaEGO(boost::asio::io_context &ioc,
                   const std::string &config_path,
                   float def_V, float def_A, float def_D, float def_radius,
-                  std::string host_jev, std::string port_jev,
+                  std::string host_laya, std::string port_laya, std::string laya_api_key,
                   std::string host_5090, std::string port_5090)
     : ayin_(std::make_unique<Ayin::Ayin>(config_path, def_V, def_A, def_D,def_radius)),
-      carmen_(std::make_unique<Carmen::Carmen>(ioc, host_jev, port_jev, host_5090, port_5090))
+      carmen_(std::make_unique<Carmen::Carmen>(ioc, host_laya, port_laya, laya_api_key,
+                                               host_5090, port_5090))
 {
 }
 
@@ -145,20 +146,22 @@ boost::asio::awaitable<nlohmann::json> deltaEGO::sephirothic_tree(
       return emotion_policy.at(key).get<bool>();
     return def;
   };
-  // Key names follow the emotion_policy wire format (use_openjev), not
-  // Carmen's parameter names (use_jev).
-  bool use_jev = flag("use_openjev", false);
-  bool use_5090 = flag("use_5090", !use_jev);
+  // Laya replaced OpenJev as the NLI-style estimator; callers still
+  // sending the old use_openjev/fallback_to_openjev keys get Laya, so the
+  // wire format didn't have to change in lockstep. The new key wins when
+  // both are present.
+  bool use_laya = flag("use_laya", flag("use_openjev", false));
+  bool use_5090 = flag("use_5090", !use_laya);
   bool fallback_to_5090 = flag("fallback_to_5090", false);
-  bool fallback_to_jev = flag("fallback_to_openjev", false);
+  bool fallback_to_laya = flag("fallback_to_laya", flag("fallback_to_openjev", false));
 
   // co_await, not a plain call — whisper_from_Carmen is a coroutine
-  // (it makes network calls to OpenJEV / the 5090 fallback), so without
+  // (it makes network calls to Laya / the 5090 model), so without
   // co_await this would just hand back the unstarted
   // awaitable<VAD_Point> object itself instead of the actual result
   // (and .V/.A/.D wouldn't even compile against that type).
   structs::VAD_Point vad_point = co_await this->carmen_->whisper_from_Carmen(
-      context, use_jev, fallback_to_5090, use_5090, fallback_to_jev);
+      context, use_laya, fallback_to_5090, use_5090, fallback_to_laya);
 
   // process_stimulus itself is still plain/synchronous (no network
   // calls in it) — co_return just wraps its result back into this
